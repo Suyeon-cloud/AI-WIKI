@@ -7,6 +7,8 @@ interface ImportMetaEnv {
   readonly VITE_GOOGLE_API_KEY?: string;
   /** Google Cloud 프로젝트 번호 — Drive Picker에만 필요 */
   readonly VITE_GOOGLE_APP_ID?: string;
+  /** Claude API 키 — AI 분석·집필에 사용 (연구 설정 화면에서 입력해도 됨) */
+  readonly VITE_ANTHROPIC_API_KEY?: string;
 }
 
 interface ImportMeta {

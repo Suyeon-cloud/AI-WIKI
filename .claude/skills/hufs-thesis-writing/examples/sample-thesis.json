@@ -1,0 +1,31 @@
+{
+  "degree": "석사",
+  "titleKo": "AI 모션그래픽 기반 한중문화콘텐츠 개발 연구",
+  "subtitle": "중국 드라마 속 언어·문화 정보를 중심으로",
+  "titleEn": "A Study on the Development of Korea-China Cultural Content Based on AI Motion Graphics",
+  "department": "중국어문학과",
+  "departmentEn": "Chinese Language and Literature",
+  "student": "홍길동",
+  "studentEn": "Gil-Dong Hong",
+  "advisor": "김교수",
+  "year": "2026",
+  "month": "12",
+  "abstractKo": "이 예시 초록은 서식 확인용이다. 실제 원고에서는 연구 목적, 방법, 주요 결과, 의의를 한 단락으로 정리한다.",
+  "keywordsKo": ["AI 모션그래픽", "한중문화콘텐츠", "중국 드라마"],
+  "abstractEn": "This sample abstract is for checking the layout only.",
+  "keywordsEn": "AI motion graphics, Korea-China cultural content, Chinese drama",
+  "chapters": [
+    {
+      "title": "Ⅰ. 서론",
+      "text": "## 1. 연구의 필요성 및 목적\n서식 확인용 예시 문단이다. 실제 원고는 AI 집필 화면에서 연구자가 모은 자료를 근거로 작성한다.\n## 2. 연구 방법 및 범위\n두 번째 절의 예시 문단이다."
+    },
+    {
+      "title": "Ⅱ. 이론적 배경",
+      "text": "## 1. 선행연구 검토\n### 1) 모션그래픽과 정보 전달\n예시 문단이다."
+    }
+  ],
+  "references": [
+    "홍길동. (2024). 예시 참고문헌 항목. 예시학회지, 1(1), 1-10.",
+    "Smith, J. (2023). An example reference. Journal of Examples, 2(3), 45-67."
+  ]
+}

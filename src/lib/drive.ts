@@ -1,9 +1,11 @@
 /**
  * Google Drive 연결 (브라우저 전용, 백엔드 없음)
  * - 인증: Google Identity Services 토큰 모델 (OAuth 2.0 암시적 토큰, client secret 불필요)
- * - 권한: drive.file — 이 앱이 만든 파일과 사용자가 Picker로 직접 고른 파일만 접근
+ * - 권한: drive.file(이 앱이 만든 파일 쓰기) + drive.readonly(내 Drive 자료를 목록에서 골라 가져오기 — 읽기 전용)
+ *   앱은 사용자가 체크한 파일만 내려받으며, 앱이 만들지 않은 파일은 수정·삭제하지 않는다.
  * - API: Drive REST v3를 fetch로 호출
- * 접근 토큰은 메모리에만 두고 localStorage·백업 파일에 저장하지 않는다.
+ * 접근 토큰은 메모리와 현재 탭의 sessionStorage에만 임시 보관한다 (같은 탭 새로고침 시 만료 전까지 복원, 탭을 닫으면 제거됨).
+ * localStorage·백업 파일에는 토큰을 저장하지 않는다.
  * localStorage에는 폴더 ID만 저장한다 (토큰이 아니며 다시 찾을 수 있는 값).
  */
 
@@ -11,7 +13,8 @@ const CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID ?? '').trim();
 const API_KEY = (import.meta.env.VITE_GOOGLE_API_KEY ?? '').trim();
 const APP_ID = (import.meta.env.VITE_GOOGLE_APP_ID ?? '').trim();
 
-const SCOPE = 'https://www.googleapis.com/auth/drive.file';
+// drive.file: 이 앱이 만든 파일 쓰기 · drive.readonly: 사용자가 Drive에 직접 올린 PDF 등을 목록에서 골라 가져오기
+const SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
 const API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
@@ -86,8 +89,38 @@ export class DriveError extends Error {
   }
 }
 
-let token: { value: string; expiresAt: number } | null = null;
-let status: DriveStatus = driveConfigured() ? 'disconnected' : 'unconfigured';
+/* 접근 토큰 임시 보관 — 현재 탭의 sessionStorage만 사용 (탭을 닫으면 브라우저가 지운다) */
+const TOKEN_KEY = 'ai-wiki:drive-token';
+type Token = { value: string; expiresAt: number };
+function saveToken(t: Token) {
+  try {
+    sessionStorage.setItem(TOKEN_KEY, JSON.stringify(t));
+  } catch {
+    /* 저장 불가 환경에서는 메모리에만 유지 */
+  }
+}
+function clearToken() {
+  try {
+    sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* 무시 */
+  }
+}
+/** 같은 탭에서 새로고침했을 때 만료 전 토큰을 복원. 만료됐거나 형식이 틀리면 지운다. */
+function restoreToken(): Token | null {
+  if (!driveConfigured()) return null;
+  try {
+    const t = JSON.parse(sessionStorage.getItem(TOKEN_KEY) ?? 'null') as Token | null;
+    if (t && typeof t.value === 'string' && typeof t.expiresAt === 'number' && Date.now() < t.expiresAt) return t;
+  } catch {
+    /* 무시 */
+  }
+  clearToken();
+  return null;
+}
+
+let token: Token | null = restoreToken();
+let status: DriveStatus = !driveConfigured() ? 'unconfigured' : token ? 'connected' : 'disconnected';
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 function setStatus(s: DriveStatus) {
@@ -104,6 +137,7 @@ export function subscribeDrive(l: () => void) {
 export function driveState() {
   if (status === 'connected' && token && Date.now() > token.expiresAt) {
     token = null;
+    clearToken();
     status = 'expired';
   }
   return { status, expiresAt: token?.expiresAt ?? null };
@@ -130,6 +164,7 @@ export async function connectDrive(): Promise<void> {
             return;
           }
           token = { value: r.access_token, expiresAt: Date.now() + (Number(r.expires_in) || 3600) * 1000 - 60_000 };
+          saveToken(token);
           resolve();
         },
         error_callback: (e) =>
@@ -149,10 +184,11 @@ export async function connectDrive(): Promise<void> {
   }
 }
 
-/** 연결 해제 — Google에 토큰 폐기를 요청하고 메모리에서 지운다 */
+/** 연결 해제 — Google에 토큰 폐기를 요청하고 메모리·sessionStorage에서 지운다 */
 export function disconnectDrive() {
   const t = token?.value;
   token = null;
+  clearToken();
   if (t) window.google?.accounts?.oauth2?.revoke(t);
   setStatus(driveConfigured() ? 'disconnected' : 'unconfigured');
 }
@@ -184,6 +220,7 @@ async function call(url: string, init: RequestInit = {}): Promise<Response> {
   }
   if (res.status === 401) {
     token = null;
+    clearToken();
     setStatus('expired');
     throw new DriveError('Google 인증이 만료되었습니다. 다시 연결하세요.', 'auth');
   }
@@ -292,6 +329,76 @@ export async function listFolder(folderId: string): Promise<DriveFile[]> {
 export async function downloadAsFile(f: { id: string; name: string }): Promise<File> {
   const res = await call(`${API}/files/${f.id}?alt=media`);
   return new File([await res.text()], f.name);
+}
+
+/* ───────── 프로젝트 폴더: 내 Drive/AI WIKI/<프로젝트>/자료 · AI 생성 ───────── */
+
+export interface ProjectFolders {
+  project: string;
+  materials: string;
+  ai: string;
+}
+
+/** 프로젝트 폴더와 하위 폴더를 찾거나 만든다. knownId가 살아 있으면 그 폴더를 그대로 쓴다. */
+export async function ensureProjectFolders(name: string, sub: { materials: string; ai: string }, knownId?: string): Promise<ProjectFolders> {
+  const { root } = await ensureFolders();
+  const project = knownId && (await folderAlive(knownId)) ? knownId : ((await findFolder(name, root)) ?? (await createFolder(name, root)));
+  const materials = (await findFolder(sub.materials, project)) ?? (await createFolder(sub.materials, project));
+  const ai = (await findFolder(sub.ai, project)) ?? (await createFolder(sub.ai, project));
+  return { project, materials, ai };
+}
+
+export interface DriveEntry extends DriveFile {
+  isFolder: boolean;
+}
+
+/** 폴더 안의 하위 폴더와 파일 (가져오기 목록 창에서 탐색용). folderId가 'root'면 내 Drive 최상위 */
+export async function browseFolder(folderId: string): Promise<DriveEntry[]> {
+  const q = `'${folderId}' in parents and trashed=false`;
+  const res = await call(
+    `${API}/files?${new URLSearchParams({ q, orderBy: 'folder,name', pageSize: '300', fields: 'files(id,name,mimeType,modifiedTime,size)', spaces: 'drive' })}`,
+  );
+  return ((await res.json()) as { files: DriveFile[] }).files.map((f) => ({ ...f, isFolder: f.mimeType === FOLDER_MIME }));
+}
+
+/** 이름으로 내 Drive 검색 (PDF·Markdown·텍스트) */
+export async function searchDrive(text: string): Promise<DriveEntry[]> {
+  const q = `name contains '${esc(text)}' and trashed=false and (mimeType='application/pdf' or mimeType='text/markdown' or mimeType='text/plain' or mimeType='application/json' or mimeType='${FOLDER_MIME}')`;
+  const res = await call(`${API}/files?${new URLSearchParams({ q, pageSize: '100', fields: 'files(id,name,mimeType,modifiedTime,size)', spaces: 'drive' })}`);
+  return ((await res.json()) as { files: DriveFile[] }).files.map((f) => ({ ...f, isFolder: f.mimeType === FOLDER_MIME }));
+}
+
+export async function downloadBlob(id: string): Promise<Blob> {
+  const res = await call(`${API}/files/${id}?alt=media`);
+  return res.blob();
+}
+
+/** 바이너리 파일 업로드 (HWPX 등). existingId가 있으면 그 파일을 갱신 */
+export async function uploadBinary(name: string, data: Blob, mime: string, parent: string, existingId?: string): Promise<DriveFile> {
+  const boundary = `aiwiki${Math.random().toString(36).slice(2)}`;
+  const meta = existingId ? { name } : { name, mimeType: mime, parents: [parent] };
+  const body = new Blob([
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${boundary}\r\nContent-Type: ${mime}\r\n\r\n`,
+    data,
+    `\r\n--${boundary}--`,
+  ]);
+  const url = existingId
+    ? `${UPLOAD}/files/${existingId}?uploadType=multipart&fields=id,name,mimeType,modifiedTime,size`
+    : `${UPLOAD}/files?uploadType=multipart&fields=id,name,mimeType,modifiedTime,size`;
+  const res = await call(url, { method: existingId ? 'PATCH' : 'POST', headers: { 'Content-Type': `multipart/related; boundary=${boundary}` }, body });
+  return (await res.json()) as DriveFile;
+}
+
+/** 텍스트 파일 저장 — 같은 파일 ID가 있으면 갱신, 지워졌으면 새로 만든다 */
+export async function saveText(name: string, content: string, mime: string, parent: string, existingId?: string): Promise<DriveFile> {
+  if (existingId) {
+    try {
+      return await updateFile(existingId, name, content, mime);
+    } catch (e) {
+      if (!(e instanceof DriveError && e.kind === 'notfound')) throw e;
+    }
+  }
+  return createFile(name, content, mime, parent);
 }
 
 /* ───────── Picker: 앱이 만들지 않은 Drive 파일 선택 ───────── */

@@ -1,278 +1,423 @@
-import { useState } from 'react';
-import { useStore } from '../store';
-import { OUTLINES } from '../data/sample';
-import { downloadFile, escapeHtml, formatDate, safeFileName, uid, wrapHtml } from '../lib/utils';
-import { Card, PageHeader, StatusBadge } from '../components/ui';
-import type { WritingState } from '../types';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { Material, ThesisChapter, ThesisDraft } from '../types';
+import { useStore, useProject } from '../store';
+import SKILL_MD from '../../.claude/skills/hufs-thesis-writing/SKILL.md?raw';
+import { AI_MODEL_LABEL, AiError, generate } from '../lib/ai';
+import { buildThesisHwpx, sectionsOf, type ThesisDoc } from '../lib/hwpx';
+import { checkBib, formatCitation, segsToText, sortForStyle } from '../lib/citation';
+import { downloadFile, safeFileName, uid } from '../lib/utils';
+import { ABSTRACT_SCHEMA, CHAPTER_SCHEMA, OUTLINE_SCHEMA, thesisContext } from '../lib/prompts';
+import { saveOutputToDrive } from '../lib/sync';
+import { Card, Empty, NeedProject, PageHeader, StatusBadge } from '../components/ui';
+import { OutputList } from '../components/Outputs';
+import { useNav } from '../components/ProjectDialog';
+import { useConnections } from '../components/Sidebar';
 
-const DOC_TYPES = ['분석 보고서', '학술논문', '학위논문', '강의노트'];
-const DEPTHS = ['초급', '중급', '고급', '전문가'];
+/** 스킬 파일의 frontmatter를 뺀 본문 = AI 집필 시스템 지침 */
+const SKILL = SKILL_MD.replace(/^---[\s\S]*?---\s*/, '');
 
-const DEPTH_TONE: Record<string, string> = {
-  초급: '핵심 개념을 쉬운 용어로 풀어',
-  중급: '개념과 사례를 균형 있게 연결하여',
-  고급: '선행 논의와의 관계를 비판적으로 검토하며',
-  전문가: '이론적 쟁점과 방법론적 한계를 함께 논의하며',
+const DEFAULT_OUTLINE: { title: string; sections: string[] }[] = [
+  { title: 'Ⅰ. 서론', sections: ['1. 연구의 필요성 및 목적', '2. 연구 문제', '3. 연구 방법 및 범위', '4. 선행연구 검토'] },
+  { title: 'Ⅱ. 이론적 배경', sections: ['1. 주요 개념 및 이론', '2. 관련 연구 및 논의'] },
+  { title: 'Ⅲ. 연구 설계', sections: ['1. 연구 대상 및 자료', '2. 연구 방법 및 절차'] },
+  { title: 'Ⅳ. 연구 결과 및 논의', sections: ['1. 분석 결과', '2. 결과에 대한 논의'] },
+  { title: 'Ⅴ. 결론', sections: ['1. 연구 요약', '2. 연구의 의의와 한계', '3. 후속 연구 제언'] },
+];
+
+const toChapters = (o: { title: string; sections: string[] }[], prev: ThesisChapter[] = []): ThesisChapter[] =>
+  o.map((c) => {
+    const old = prev.find((p) => p.title === c.title);
+    return { id: old?.id ?? uid(), title: c.title, sections: c.sections, text: old?.text ?? '' };
+  });
+
+const refLine = (m: Material) => {
+  const s = formatCitation(m, 'APA 7');
+  return s ? segsToText(s) : m.title;
 };
 
 export function Writing() {
-  const { state, dispatch, toast } = useStore();
-  const w = state.writing;
-  const s = state.settings;
+  const { dispatch, toast } = useStore();
+  const { project, materials, outputs, thesis } = useProject();
+  const nav = useNav();
+  const conn = useConnections();
+  const [active, setActive] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const set = (patch: Partial<WritingState>) => dispatch({ type: 'writing', patch });
+  const [chars, setChars] = useState(0);
+  const [todo, setTodo] = useState<Record<string, string[]>>({});
+  const [insightId, setInsightId] = useState('');
+  const [length, setLength] = useState(4000);
+  const ctrl = useRef<AbortController | null>(null);
 
-  const basis = state.materials.filter((m) => m.relevance >= 4).slice(0, 3);
+  const t = thesis;
+  useEffect(() => {
+    setActive(t?.chapters[0]?.id ?? null);
+    // 근거 자료 기본값: 참고문헌 선택 자료 + 관련도 4 이상
+    if (project && t && !t.materialIds.length && materials.length)
+      dispatch({ type: 'thesis', projectId: project.id, patch: { materialIds: materials.filter((m) => m.citationIncluded || m.relevance >= 4).map((m) => m.id) } });
+  }, [project?.id]);
 
-  const pushHistory = (label: string, text: string, extra: Partial<WritingState> = {}) =>
-    set({
-      text,
-      history: [{ id: uid(), at: new Date().toISOString(), label, text }, ...w.history].slice(0, 20),
-      ...extra,
-    });
+  const basis = useMemo(() => materials.filter((m) => t?.materialIds.includes(m.id)), [materials, t?.materialIds]);
+  const insights = outputs.filter((o) => o.kind === '전체 분석');
 
-  const demo = (key: string, fn: () => void) => {
-    setBusy(key);
-    setTimeout(() => {
-      fn();
+  if (!project || !t)
+    return (
+      <>
+        <PageHeader title="AI 집필" desc="외대 학위논문 서식으로 원고를 작성합니다." />
+        <NeedProject onCreate={nav.newProject} />
+      </>
+    );
+
+  const set = (patch: Partial<ThesisDraft>) => dispatch({ type: 'thesis', projectId: project.id, patch });
+  const chapter = t.chapters.find((c) => c.id === active) ?? null;
+  const setChapter = (id: string, patch: Partial<ThesisChapter>) => set({ chapters: t.chapters.map((c) => (c.id === id ? { ...c, ...patch } : c)) });
+  const outline = t.chapters.map((c) => ({ title: c.title, sections: c.sections.filter((s) => s.trim()) }));
+  const insight = insights.find((o) => o.id === insightId)?.content;
+  const title = t.titleKo || project.topic;
+
+  function needAi() {
+    if (!conn.ai) {
+      toast('Claude API 키가 필요합니다. 연구 설정에서 입력하세요.', 'error');
+      return false;
+    }
+    return true;
+  }
+
+  async function call<T>(label: string, o: { content: string; schema: object; maxTokens?: number }) {
+    ctrl.current = new AbortController();
+    setBusy(label);
+    setChars(0);
+    try {
+      return await generate<T>({ system: SKILL, content: o.content, schema: o.schema as Record<string, unknown>, maxTokens: o.maxTokens, onProgress: setChars, signal: ctrl.current.signal });
+    } finally {
       setBusy(null);
-    }, 700);
-  };
-
-  function recommendOutline() {
-    demo('outline', () => {
-      const outline = OUTLINES[w.docType] ?? OUTLINES['학술논문'];
-      set({ outline, selectedSection: outline[0] });
-      toast('샘플 목차를 표시했습니다. (Demo)', 'info');
-    });
+    }
   }
 
-  function draft() {
-    if (!w.selectedSection) return toast('먼저 목차를 추천받고 작성할 챕터/절을 선택하세요.', 'error');
-    demo('draft', () => {
-      const refs = basis.map((m) => `「${m.title}」`).join(', ') || '라이브러리 자료';
-      const text = [
-        `${w.selectedSection}`,
-        '',
-        `[Demo 샘플 문단 — 실제 AI 생성 결과가 아닙니다]`,
-        '',
-        `본 절에서는 "${s.topic}"의 맥락에서 ${DEPTH_TONE[w.depth]} 서술한다. ` +
-          `${s.keywords[0]}은(는) ${s.keywords[2]} 속 언어·문화 정보를 시각적으로 구조화하여 전달하는 수단으로 활용될 수 있으며, ` +
-          `${s.keywords[3]}은(는) 콘텐츠 기획, 정보 정리, 시각 요소 초안 구현 단계에서 연구자의 작업을 보조하는 도구로 위치시킬 수 있다.`,
-        '',
-        `참고 자료로는 ${refs} 등을 검토하였다. 다만 이들 자료의 서지정보는 아직 확인되지 않았으므로 인용 전 원문 확인이 필요하다.`,
-        '',
-        `(목표 분량: 공백 포함 약 ${w.length.toLocaleString()}자 · ${w.docType} · ${w.depth} — Demo에서는 짧은 샘플만 생성됩니다)`,
-      ].join('\n');
-      pushHistory(`글 작성 (Demo) — ${w.selectedSection}`, text);
-      toast('샘플 초안을 생성했습니다. (Demo)', 'info');
-    });
-  }
-
-  function rewrite() {
-    if (!w.text.trim()) return toast('재작성할 본문이 없습니다.', 'error');
-    demo('rewrite', () => {
-      const text =
-        w.text
-          .replace(/할 수 있으며/g, '할 수 있고')
-          .replace(/서술한다\./g, '논의한다.')
-          .replace(/\[Demo 샘플 문단[^\]]*\]/g, '') +
-        `\n\n[Demo 재작성] 문장 연결을 다듬고, "${s.keywords[1]}" 관점의 문장을 보강하는 방향을 예시로 보여 줍니다. ` +
-        `예: 이러한 설계는 한국 학습자가 ${s.keywords[2]}의 문화적 맥락을 보다 직관적으로 이해하도록 돕는 ${s.keywords[1]} 개발로 이어질 수 있다.`;
-      pushHistory('AI 재작성 (Demo)', text.trim());
-      toast('샘플 재작성 결과를 반영했습니다. (Demo)', 'info');
-    });
-  }
-
-  function feedback() {
-    if (!w.text.trim()) return toast('피드백을 받을 본문이 없습니다.', 'error');
-    demo('fb', () => {
-      const len = w.text.length;
-      set({
-        feedback: [
-          `[논리] 핵심 주장("${s.keywords[0]}의 정보 전달 역할")과 근거 사이에 사례 연결 문장을 추가하면 흐름이 명확해집니다.`,
-          `[근거] 현재 본문은 공백 포함 ${len.toLocaleString()}자로 목표 ${w.length.toLocaleString()}자의 ${Math.round((len / w.length) * 100)}% 수준입니다.`,
-          '[인용] 참고 자료의 서지정보가 "확인 필요" 상태입니다. 인용 전 저자·연도·발행처를 원문에서 확인하세요.',
-          '[표현] "~할 수 있다" 표현이 반복됩니다. 일부는 단정적 서술 또는 근거 제시로 바꾸는 것을 고려하세요.',
-        ],
+  async function suggestOutline() {
+    if (!needAi()) return;
+    try {
+      const { data, model } = await call<{ chapters: { title: string; sections: string[] }[]; rationale: string }>('outline', {
+        content: `${thesisContext(project!, title, outline, basis, insight)}\n\n위 연구 주제와 자료에 맞는 외대 ${project!.degree} 학위논문 목차(장·절)를 제안하라. 현재 목차가 있으면 다듬어라.`,
+        schema: OUTLINE_SCHEMA,
+        maxTokens: 8000,
       });
-      toast('샘플 피드백을 표시했습니다. (Demo)', 'info');
-    });
+      set({ chapters: toChapters(data.chapters, t!.chapters) });
+      setActive(null);
+      dispatch({
+        type: 'addOutput',
+        output: { id: uid(), projectId: project!.id, kind: '목차 제안', title: `목차 제안 — ${title}`, createdAt: new Date().toISOString(), model, content: `${data.chapters.map((c) => `## ${c.title}\n${c.sections.map((s) => `- ${s}`).join('\n')}`).join('\n\n')}\n\n## 구성 이유\n${data.rationale}`, materialIds: basis.map((m) => m.id) },
+      });
+      toast('AI가 목차를 제안했습니다. 지도교수와 협의한 목차로 고쳐 쓰세요.');
+    } catch (e) {
+      toast(e instanceof AiError ? e.message : String(e), 'error');
+    }
   }
 
-  function saveManual() {
-    pushHistory('직접 수정 저장', w.text);
-    toast('현재 본문을 변경 이력에 저장했습니다.');
+  async function writeChapter(c: ThesisChapter) {
+    if (!needAi()) return false;
+    if (!basis.length) {
+      toast('근거 자료를 1건 이상 선택하세요. AI는 선택한 자료만 인용합니다.', 'error');
+      return false;
+    }
+    const others = t!.chapters
+      .filter((x) => x.id !== c.id && x.text.trim())
+      .map((x) => `${x.title}\n${x.text.slice(0, 800)}…`)
+      .join('\n\n');
+    try {
+      const { data, model } = await call<{ text: string; citedIds: string[]; todo: string[] }>(`ch:${c.id}`, {
+        content: `${thesisContext(project!, title, outline, basis, insight)}
+
+${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
+[이번에 쓸 장] ${c.title}
+[절 구성] ${c.sections.filter((s) => s.trim()).join(' / ') || '(절을 적절히 구성)'}
+[분량] 공백 포함 약 ${length.toLocaleString()}자
+
+위 장의 본문을 외대 학위논문 문체와 원고 출력 형식(절은 '## ', 항은 '### ')으로 써라.`,
+        schema: CHAPTER_SCHEMA,
+        maxTokens: 32000,
+      });
+      setChapter(c.id, { text: data.text });
+      setTodo((x) => ({ ...x, [c.id]: data.todo }));
+      dispatch({
+        type: 'addOutput',
+        output: { id: uid(), projectId: project!.id, kind: '집필 초안', title: `${c.title} 초안`, createdAt: new Date().toISOString(), model, content: `# ${c.title}\n\n${data.text}${data.todo.length ? `\n\n## 연구자 확인 사항\n${data.todo.map((x) => `- ${x}`).join('\n')}` : ''}`, materialIds: data.citedIds },
+      });
+      dispatch({ type: 'log', event: { projectId: project!.id, kind: '집필', text: `AI가 '${c.title}' 초안을 작성했습니다.` } });
+      return true;
+    } catch (e) {
+      toast(e instanceof AiError ? e.message : String(e), 'error');
+      return false;
+    }
   }
 
-  function exportHtml() {
-    if (!w.text.trim()) return toast('내보낼 본문이 없습니다.', 'error');
-    const body =
-      `<h1>${escapeHtml(s.topic)}</h1><p><em>${escapeHtml(w.docType)} · ${escapeHtml(w.depth)}</em></p>` +
-      (w.outline.length ? `<h2>목차</h2><ul>${w.outline.map((o) => `<li>${escapeHtml(o)}</li>`).join('')}</ul>` : '') +
-      '<h2>본문</h2>' +
-      w.text
-        .split(/\n{2,}/)
-        .map((p) => `<p>${escapeHtml(p).replace(/\n/g, '<br>')}</p>`)
-        .join('\n');
-    downloadFile(`${safeFileName(s.topic)}-${w.docType}.html`, wrapHtml(s.topic, body), 'text/html');
-    toast('HTML 파일을 다운로드했습니다.');
+  async function writeAll() {
+    for (const c of t!.chapters) {
+      if (c.text.trim()) continue;
+      setActive(c.id);
+      if (!(await writeChapter(c))) return;
+    }
+    toast('비어 있던 장을 모두 작성했습니다.');
   }
 
-  function exportMd() {
-    if (!w.text.trim()) return toast('내보낼 본문이 없습니다.', 'error');
-    const md = `---\ntitle: "${s.topic}"\ntype: ${w.docType}\ntags: [${s.keywords.map((k) => `"${k}"`).join(', ')}]\n---\n\n# ${s.topic}\n\n${
-      w.outline.length ? `## 목차\n\n${w.outline.map((o) => `- ${o}`).join('\n')}\n\n` : ''
-    }## 본문\n\n${w.text}\n`;
-    downloadFile(`${safeFileName(s.topic)}-${w.docType}.md`, md, 'text/markdown');
-    toast('Markdown 파일을 다운로드했습니다.');
+  async function makeAbstract() {
+    if (!needAi()) return;
+    const body = t!.chapters.map((c) => `${c.title}\n${c.text.slice(0, 3000)}`).join('\n\n');
+    if (!body.replace(/Ⅰ|Ⅱ|Ⅲ|Ⅳ|Ⅴ|\.|\s/g, '')) return toast('본문을 먼저 작성하세요.', 'info');
+    try {
+      const { data } = await call<{ abstractKo: string; keywordsKo: string[]; titleEn: string; abstractEn: string; keywordsEn: string }>('abstract', {
+        content: `논문 제목: ${title}\n키워드: ${project!.keywords.join(', ')}\n\n[본문]\n${body}\n\n이 논문의 국문초록과 ABSTRACT(영문)를 서식에 맞게 써라.`,
+        schema: ABSTRACT_SCHEMA,
+        maxTokens: 8000,
+      });
+      set({ abstractKo: data.abstractKo, abstractEn: data.abstractEn, keywordsEn: data.keywordsEn, titleEn: t!.titleEn || data.titleEn });
+      if (data.keywordsKo.length && !project!.keywords.length) dispatch({ type: 'updateProject', id: project!.id, patch: { keywords: data.keywordsKo } });
+      toast('국문초록과 ABSTRACT를 작성했습니다.');
+    } catch (e) {
+      toast(e instanceof AiError ? e.message : String(e), 'error');
+    }
   }
+
+  const refs = sortForStyle(basis.filter((m) => checkBib(m).complete), 'APA 7');
+  const missingBib = basis.filter((m) => !checkBib(m).complete);
+
+  function doc(): ThesisDoc {
+    return {
+      degree: project!.degree,
+      titleKo: title,
+      subtitle: t!.subtitle,
+      titleEn: t!.titleEn,
+      department: project!.department,
+      departmentEn: project!.departmentEn,
+      student: project!.student,
+      studentEn: project!.studentEn,
+      advisor: project!.advisor,
+      year: t!.submitYear,
+      month: t!.submitMonth,
+      abstractKo: t!.abstractKo,
+      keywordsKo: project!.keywords,
+      abstractEn: t!.abstractEn,
+      keywordsEn: t!.keywordsEn,
+      chapters: t!.chapters.map((c) => ({ title: c.title, text: c.text })),
+      references: refs.map(refLine),
+    };
+  }
+
+  async function exportHwpx(toDrive: boolean) {
+    if (!t!.chapters.length) return toast('목차와 본문을 먼저 작성하세요.', 'info');
+    const bytes = buildThesisHwpx(doc());
+    const name = `${safeFileName(title)}_${project!.degree}학위논문.hwpx`;
+    const blob = new Blob([bytes], { type: 'application/hwp+zip' });
+    const output = {
+      id: uid(),
+      projectId: project!.id,
+      kind: '학위논문 HWPX' as const,
+      title: `${name}`,
+      createdAt: new Date().toISOString(),
+      model: AI_MODEL_LABEL,
+      content: `# ${title}\n\n${t!.chapters.map((c) => `## ${c.title}\n\n${c.text}`).join('\n\n')}\n\n## 참고문헌\n${refs.map((m) => `- ${refLine(m)}`).join('\n')}`,
+      materialIds: basis.map((m) => m.id),
+    };
+    if (!toDrive) {
+      const url = URL.createObjectURL(blob);
+      const a = Object.assign(document.createElement('a'), { href: url, download: name });
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      dispatch({ type: 'log', event: { projectId: project!.id, kind: '내보내기', text: `학위논문 HWPX를 내려받았습니다 (${name}).` } });
+      toast('HWPX 파일을 내려받았습니다. 한글에서 열어 쪽 번호·목차 쪽수를 확인하세요.');
+      return;
+    }
+    setBusy('drive');
+    try {
+      const r = await saveOutputToDrive(output, project!, { blob, name, mime: 'application/hwp+zip' });
+      const md = await saveOutputToDrive(output, project!);
+      dispatch({ type: 'addOutput', output: { ...output, driveFileId: md.fileId, driveSyncedAt: new Date().toISOString() } });
+      if (!project!.driveFolderId) dispatch({ type: 'updateProject', id: project!.id, patch: { driveFolderId: r.folderId, driveCreatedAt: new Date().toISOString() } });
+      dispatch({ type: 'log', event: { projectId: project!.id, kind: '내보내기', text: `학위논문 HWPX를 Drive 'AI 생성' 폴더에 저장했습니다.` } });
+      toast(`Google Drive 'AI WIKI/${project!.name}/AI 생성' 폴더에 HWPX와 원고 Markdown을 저장했습니다.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const totalChars = t.chapters.reduce((s, c) => s + c.text.length, 0);
 
   return (
     <>
       <PageHeader
         title="AI 집필"
-        desc="라이브러리 자료와 연구 설정을 바탕으로 목차 구성 → 초안 작성 → 수정 → 피드백 흐름을 지원합니다."
-        badges={<><StatusBadge s="demo">AI 생성 Demo</StatusBadge><StatusBadge s="real">편집·이력·내보내기</StatusBadge></>}
+        desc="지도교수·목차를 정하면 학위논문집필 스킬(외대 서식)에 따라 장별 원고를 쓰고, 표지부터 참고문헌까지 HWPX로 출력합니다."
+        badges={<><StatusBadge s="ai">{AI_MODEL_LABEL}</StatusBadge><span className="chip chip-strong">스킬: hufs-thesis-writing</span></>}
       />
 
       <div className="writing-layout">
         <div className="writing-side">
-          <Card title="작성 옵션">
-            <div className="field"><span className="field-label">작성 유형</span>
-              <div className="seg">
-                {DOC_TYPES.map((t) => (
-                  <button key={t} className={w.docType === t ? 'active' : ''} onClick={() => set({ docType: t })}>{t}</button>
-                ))}
-              </div>
-            </div>
-            <div className="field"><span className="field-label">작성 심도</span>
-              <div className="seg">
-                {DEPTHS.map((t) => (
-                  <button key={t} className={w.depth === t ? 'active' : ''} onClick={() => set({ depth: t })}>{t}</button>
-                ))}
-              </div>
-            </div>
-            <div className="field"><span className="field-label">분량 (공백 포함 한글 자수)</span>
-              <div className="range-row">
-                <input
-                  type="range"
-                  min={2000}
-                  max={20000}
-                  step={500}
-                  value={w.length}
-                  onChange={(e) => set({ length: Number(e.target.value) })}
-                />
-                <input
-                  type="number"
-                  min={2000}
-                  max={20000}
-                  step={500}
-                  value={w.length}
-                  onChange={(e) => set({ length: Number(e.target.value) })}
-                  onBlur={() => set({ length: Math.min(20000, Math.max(2000, w.length || 2000)) })}
-                />
-              </div>
-            </div>
-            <div className="muted small">기반 자료(관련도 4~5등급): {basis.length ? basis.map((m) => m.title).join(' / ') : '없음'}</div>
+          <Card title="논문 정보 (표지·심사청구서)" extra={<button className="link small" onClick={() => nav.editProject(project)}>학과·지도교수 수정</button>}>
+            <label className="field">
+              <span className="field-label">논문 제목</span>
+              <input value={t.titleKo} onChange={(e) => set({ titleKo: e.target.value })} placeholder={project.topic} />
+            </label>
+            <label className="field">
+              <span className="field-label">부제목</span>
+              <input value={t.subtitle} onChange={(e) => set({ subtitle: e.target.value })} placeholder="선택" />
+            </label>
+            <label className="field">
+              <span className="field-label">영문 제목</span>
+              <input value={t.titleEn} onChange={(e) => set({ titleEn: e.target.value })} placeholder="초록 생성 시 AI가 제안" />
+            </label>
+            <dl className="meta small-meta">
+              <dt>학위</dt><dd>{project.degree}</dd>
+              <dt>학과</dt><dd>{project.department || <span className="warn-tag">미입력</span>}</dd>
+              <dt>지도교수</dt><dd>{project.advisor || <span className="warn-tag">미입력</span>}</dd>
+              <dt>성명</dt><dd>{project.student || <span className="warn-tag">미입력</span>}</dd>
+              <dt>제출</dt>
+              <dd className="inline-inputs">
+                <input value={t.submitYear} onChange={(e) => set({ submitYear: e.target.value })} style={{ width: 64 }} /> 년
+                <input value={t.submitMonth} onChange={(e) => set({ submitMonth: e.target.value })} style={{ width: 44 }} /> 월
+              </dd>
+            </dl>
           </Card>
 
-          <Card title="목차" extra={<StatusBadge s="demo" />}>
-            <button className="btn btn-demo full" onClick={recommendOutline} disabled={busy !== null}>
-              {busy === 'outline' ? '추천 중… (Demo)' : '목차 추천 (Demo)'}
-            </button>
-            {w.outline.length > 0 && (
-              <ul className="outline">
-                {w.outline.map((o) => (
-                  <li key={o}>
-                    <button className={w.selectedSection === o ? 'active' : ''} onClick={() => set({ selectedSection: o })}>
-                      {o}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-
-          <Card title="변경 이력" extra={<StatusBadge s="real" />}>
-            {w.history.length === 0 ? (
-              <p className="muted small">아직 이력이 없습니다.</p>
+          <Card title={`근거 자료 (${basis.length}건)`} extra={<span className="muted small">AI는 이 자료만 인용</span>}>
+            {materials.length === 0 ? (
+              <Empty>자료가 없습니다.</Empty>
             ) : (
-              <ul className="history">
-                {w.history.map((h) => (
-                  <li key={h.id}>
-                    <div>
-                      <b>{h.label}</b>
-                      <span className="muted small">
-                        {formatDate(h.at)} {new Date(h.at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })} · {h.text.length}자
-                      </span>
-                    </div>
-                    <button
-                      className="btn btn-sm"
-                      onClick={() => {
-                        set({ text: h.text });
-                        toast('선택한 버전으로 되돌렸습니다.');
-                      }}
-                    >
-                      복원
-                    </button>
+              <ul className="check-list">
+                {materials.map((m) => (
+                  <li key={m.id}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={t.materialIds.includes(m.id)}
+                        onChange={() => set({ materialIds: t.materialIds.includes(m.id) ? t.materialIds.filter((x) => x !== m.id) : [...t.materialIds, m.id] })}
+                      />
+                      <span>{m.title}</span>
+                      {!checkBib(m).complete && <span className="warn-tag" title="참고문헌 목록에서 빠짐">서지 확인</span>}
+                    </label>
                   </li>
                 ))}
               </ul>
             )}
+            <label className="field" style={{ marginTop: 10 }}>
+              <span className="field-label">AI 전체 분석 결과 참고 (선택)</span>
+              <select value={insightId} onChange={(e) => setInsightId(e.target.value)}>
+                <option value="">사용 안 함</option>
+                {insights.map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
+              </select>
+            </label>
+          </Card>
+
+          <Card
+            title="목차"
+            extra={
+              <div className="btn-group">
+                <button className="btn btn-sm" onClick={() => { set({ chapters: toChapters(DEFAULT_OUTLINE, t.chapters) }); setActive(null); }} disabled={!!busy}>기본 목차</button>
+                <button className="btn btn-sm btn-ai" onClick={suggestOutline} disabled={!!busy}>{busy === 'outline' ? '제안 중…' : 'AI 목차 제안'}</button>
+              </div>
+            }
+          >
+            {t.chapters.length === 0 ? (
+              <Empty>지도교수와 협의한 목차를 입력하거나 기본 목차·AI 제안으로 시작하세요.</Empty>
+            ) : (
+              <ul className="outline-edit">
+                {t.chapters.map((c, i) => (
+                  <li key={c.id} className={c.id === active ? 'active' : ''}>
+                    <div className="outline-row">
+                      <input value={c.title} onChange={(e) => setChapter(c.id, { title: e.target.value })} onFocus={() => setActive(c.id)} />
+                      <span className={c.text.trim() ? 'ok-tag' : 'muted small'}>{c.text.trim() ? `${c.text.length.toLocaleString()}자` : '미작성'}</span>
+                      <button className="link small" title="장 삭제" onClick={() => set({ chapters: t.chapters.filter((x) => x.id !== c.id) })}>✕</button>
+                    </div>
+                    <textarea
+                      rows={Math.max(2, c.sections.length)}
+                      value={c.sections.join('\n')}
+                      onChange={(e) => setChapter(c.id, { sections: e.target.value.split('\n') })}
+                      onFocus={() => setActive(c.id)}
+                      placeholder="절 제목 (한 줄에 하나)"
+                    />
+                    {i === t.chapters.length - 1 && null}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button className="link small" onClick={() => set({ chapters: [...t.chapters, { id: uid(), title: `${['Ⅰ', 'Ⅱ', 'Ⅲ', 'Ⅳ', 'Ⅴ', 'Ⅵ', 'Ⅶ', 'Ⅷ'][t.chapters.length] ?? t.chapters.length + 1}. `, sections: [], text: '' }] })}>
+              ＋ 장 추가
+            </button>
           </Card>
         </div>
 
         <div className="writing-main">
           <Card
-            title={w.selectedSection ? `본문 — ${w.selectedSection}` : '본문'}
-            extra={
-              <span className="muted small">
-                {w.text.length.toLocaleString()} / {w.length.toLocaleString()}자
-              </span>
-            }
+            title={chapter ? chapter.title : '본문'}
+            extra={<span className="muted small">전체 {totalChars.toLocaleString()}자</span>}
           >
-            <div className="toolbar">
-              <button className="btn btn-demo" onClick={draft} disabled={busy !== null}>
-                {busy === 'draft' ? '작성 중… (Demo)' : '글 작성 (Demo)'}
-              </button>
-              <button className="btn btn-demo" onClick={rewrite} disabled={busy !== null}>
-                {busy === 'rewrite' ? '재작성 중… (Demo)' : 'AI 재작성 (Demo)'}
-              </button>
-              <button className="btn btn-demo" onClick={feedback} disabled={busy !== null}>
-                {busy === 'fb' ? '검토 중… (Demo)' : '논리·근거·인용 피드백 (Demo)'}
-              </button>
-              <span className="spacer" />
-              <button className="btn" onClick={saveManual} disabled={!w.text.trim()}>
-                수정 내용 저장
-              </button>
-            </div>
-            <div className="progress">
-              <span style={{ width: `${Math.min(100, (w.text.length / w.length) * 100)}%` }} />
-            </div>
-            <textarea
-              className="editor"
-              value={w.text}
-              onChange={(e) => set({ text: e.target.value })}
-              placeholder="목차를 추천받고 챕터/절을 선택한 뒤 '글 작성 (Demo)'을 누르거나, 직접 작성하세요."
-            />
+            {t.chapters.length > 0 && (
+              <div className="chapter-tabs">
+                {t.chapters.map((c) => (
+                  <button key={c.id} className={c.id === active ? 'active' : ''} onClick={() => setActive(c.id)}>
+                    {c.title.split('.')[0] || '장'}
+                    {c.text.trim() && <i className="dot" />}
+                  </button>
+                ))}
+              </div>
+            )}
+            {!chapter ? (
+              <Empty>왼쪽 목차에서 장을 선택하세요.</Empty>
+            ) : (
+              <>
+                <div className="toolbar">
+                  <button className="btn btn-primary" onClick={() => writeChapter(chapter)} disabled={!!busy}>
+                    {busy === `ch:${chapter.id}` ? `AI가 쓰는 중… ${chars ? `(${chars.toLocaleString()}자)` : ''}` : chapter.text.trim() ? 'AI로 이 장 다시 쓰기' : 'AI로 이 장 쓰기'}
+                  </button>
+                  <button className="btn" onClick={writeAll} disabled={!!busy}>빈 장 모두 쓰기</button>
+                  {busy && <button className="btn btn-sm" onClick={() => ctrl.current?.abort()}>취소</button>}
+                  <span className="spacer" />
+                  <label className="small">
+                    분량
+                    <select value={length} onChange={(e) => setLength(Number(e.target.value))} style={{ width: 'auto', marginLeft: 6 }}>
+                      {[2000, 4000, 6000, 8000, 12000].map((n) => <option key={n} value={n}>{n.toLocaleString()}자</option>)}
+                    </select>
+                  </label>
+                </div>
+                <p className="muted small">형식: 절은 <code>## 1. 제목</code>, 항은 <code>### 1) 제목</code>, 문단은 한 줄에 하나 — 이 형식대로 HWPX 문단 모양이 정해집니다. 직접 고쳐 써도 됩니다.</p>
+                <textarea className="editor" value={chapter.text} onChange={(e) => setChapter(chapter.id, { text: e.target.value })} placeholder={'## 1. 연구의 필요성 및 목적\n본문 문단…'} />
+                {sectionsOf(chapter.text).length > 0 && <p className="muted small">절: {sectionsOf(chapter.text).join(' · ')}</p>}
+                {todo[chapter.id]?.length ? (
+                  <div className="notice">
+                    <b>연구자 확인 사항 (AI 메모)</b>
+                    <ul>{todo[chapter.id].map((x) => <li key={x}>{x}</li>)}</ul>
+                  </div>
+                ) : null}
+              </>
+            )}
           </Card>
 
-          {w.feedback.length > 0 && (
-            <Card title="논리·근거·인용 피드백" extra={<StatusBadge s="demo">Demo 샘플 피드백</StatusBadge>} className="demo-outline">
-              <ul className="feedback">{w.feedback.map((f) => <li key={f}>{f}</li>)}</ul>
-            </Card>
-          )}
+          <Card title="국문초록 · ABSTRACT" extra={<button className="btn btn-sm btn-ai" onClick={makeAbstract} disabled={!!busy}>{busy === 'abstract' ? '작성 중…' : 'AI로 초록 쓰기'}</button>}>
+            <div className="form-grid">
+              <label className="span-2">국문초록<textarea rows={4} value={t.abstractKo} onChange={(e) => set({ abstractKo: e.target.value })} /></label>
+              <label className="span-2">ABSTRACT<textarea rows={4} value={t.abstractEn} onChange={(e) => set({ abstractEn: e.target.value })} /></label>
+              <label className="span-2">Keywords<input value={t.keywordsEn} onChange={(e) => set({ keywordsEn: e.target.value })} /></label>
+            </div>
+          </Card>
 
-          <Card title="출력">
+          <Card title="출력 — 한국외대 학위논문 서식 HWPX">
+            <ol className="export-steps">
+              <li>겉표지 · 속표지 · 심사청구서(지도교수) · 인정서(심사위원 {project.degree === '박사' ? 5 : 3}인)</li>
+              <li>국문초록 · 목차 · 본문 {t.chapters.length}개 장</li>
+              <li>참고문헌 {refs.length}건 (APA 7, 국문→외국 문헌 순){missingBib.length > 0 && <span className="warn-tag">서지 미완성 {missingBib.length}건 제외 — <button className="link small" onClick={() => nav.go('references')}>참고문헌에서 보완</button></span>}</li>
+              <li>ABSTRACT · 19×26cm 지면, 좌 3cm · 우 2cm, 쪽 번호 아래 가운데</li>
+            </ol>
             <div className="btn-group">
-              <button className="btn" onClick={exportHtml}>HTML 다운로드</button>
-              <button className="btn" onClick={exportMd}>Markdown 다운로드</button>
-              <button className="btn btn-disabled-look" onClick={() => toast('HWPX 출력은 연동 예정입니다. 현재는 파일이 생성되지 않습니다.', 'info')}>
-                HWPX 출력 <StatusBadge s="planned" />
+              <button className="btn btn-primary" onClick={() => exportHwpx(false)} disabled={!!busy}>HWPX 내려받기</button>
+              <button className="btn" onClick={() => exportHwpx(true)} disabled={!!busy || !conn.drive} title={conn.drive ? '' : '연구 설정에서 Drive 연결'}>
+                {busy === 'drive' ? '저장 중…' : '☁ Drive "AI 생성" 폴더에 저장'}
               </button>
+              <button className="btn" onClick={() => downloadFile(`${safeFileName(title)}_원고.json`, JSON.stringify(doc(), null, 2), 'application/json')}>원고 JSON (스킬용)</button>
             </div>
+            <p className="muted small">AI가 쓴 원고는 초안입니다. 인용·사실관계를 원문과 대조하고, 한글에서 목차 쪽수와 표지 줄 간격을 확인한 뒤 제출하세요.</p>
           </Card>
+
+          <OutputList kinds={['목차 제안', '집필 초안', '학위논문 HWPX']} title="집필 기록 (AI 결과물)" />
         </div>
       </div>
     </>

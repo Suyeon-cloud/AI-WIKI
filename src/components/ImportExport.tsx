@@ -119,7 +119,8 @@ export function ImportFlow({
       close();
       return;
     }
-    const plan = planImport(state.materials, candidates);
+    // 새 자료는 현재 프로젝트에 들어가므로, 중복 의심도 현재 프로젝트 자료와만 비교한다
+    const plan = planImport(state.materials, candidates, state.materials.filter((m) => m.projectId === state.currentProjectId));
     setPending({
       mode: 'merge',
       items: plan.items,
@@ -307,14 +308,16 @@ export function ImportExport({ selected }: { selected: Material | null }) {
 
   return (
     <Card
-      title="Obsidian 호환 가져오기 / 내보내기"
+      title="파일 가져오기 / 내보내기"
       extra={<StatusBadge s="real">파일 기반 교류</StatusBadge>}
       className="io-card"
     >
       <p className="muted small">
-        Obsidian vault에 직접 접근하거나 자동 동기화하지 않습니다. .md 파일을 vault 폴더에 넣거나, vault의 노트를 이
-        화면으로 가져오는 <b>파일 기반 교류</b> 방식입니다. Markdown frontmatter의 ID·서지정보·태그·PARA와 '내 관점' 섹션을
-        인식하므로, 내보낸 노트를 다시 가져오면 같은 자료로 갱신됩니다.
+        내 컴퓨터의 <b>Markdown·TXT·JSON 파일</b>을 직접 골라 가져오거나, 자료를 파일로 내려받는 기능입니다. Obsidian Vault 연동 기능이 아닙니다.
+        Markdown frontmatter의 ID·서지정보·태그·PARA와 '내 관점' 섹션을 인식하므로, 내보낸 파일을 다시 가져오면 같은 자료로 갱신됩니다.
+      </p>
+      <p className="muted small">
+        연결된 Obsidian Vault나 Google Drive의 기존 자료는 <b>자료 수집 → 연동 저장소에서 가져오기</b>에서 가져옵니다.
       </p>
       <div className="io-row">
         <span className="io-label">가져오기</span>

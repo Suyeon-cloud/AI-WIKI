@@ -78,6 +78,11 @@ const initial = (): AppState => ({
   settings: parseFullState({ materials: [] }).state.settings,
   writing: DEFAULT_WRITING,
   selectedId: null,
+  projects: [],
+  currentProjectId: null,
+  events: [],
+  aiOutputs: [],
+  theses: [],
 });
 
 const journalBib: Bib = {

@@ -142,6 +142,65 @@ export const cleanSubdir = (s: string) =>
     .filter((x) => x && x !== '.' && x !== '..')
     .join('/');
 
+/* ───────── 화면 간에 공유하는 연결 상태 ───────── */
+
+const SUBDIR_KEY = 'ai-wiki:obsidian-subdir';
+export function vaultBaseDir(): string {
+  try {
+    return cleanSubdir(localStorage.getItem(SUBDIR_KEY) ?? 'AI WIKI');
+  } catch {
+    return 'AI WIKI';
+  }
+}
+export function setVaultBaseDir(s: string) {
+  try {
+    localStorage.setItem(SUBDIR_KEY, cleanSubdir(s));
+  } catch {
+    /* 무시 */
+  }
+}
+
+let vault: { handle: DirHandle | null; granted: boolean; loaded: boolean } = { handle: null, granted: false, loaded: false };
+const vaultListeners = new Set<() => void>();
+const emitVault = () => vaultListeners.forEach((l) => l());
+export const vaultState = () => vault;
+export function subscribeVault(l: () => void) {
+  vaultListeners.add(l);
+  if (!vault.loaded && obsidianSupported()) {
+    vault = { ...vault, loaded: true };
+    void loadSavedFolder().then(async (h) => {
+      if (!h) return;
+      vault = { handle: h, granted: await ensurePermission(h, false).catch(() => false), loaded: true };
+      emitVault();
+    });
+  }
+  return () => {
+    vaultListeners.delete(l);
+  };
+}
+export function setVault(handle: DirHandle | null, granted: boolean) {
+  vault = { handle, granted, loaded: true };
+  emitVault();
+}
+
+/** 프로젝트 폴더: <Vault>/<기본 폴더>/<프로젝트>/자료 · AI 생성 */
+export async function ensureProjectDirs(root: DirHandle, project: string, sub: { materials: string; ai: string }): Promise<string> {
+  const base = [vaultBaseDir(), cleanSubdir(project)].filter(Boolean).join('/');
+  await resolveDir(root, `${base}/${sub.materials}`, true);
+  await resolveDir(root, `${base}/${sub.ai}`, true);
+  return base;
+}
+
+/** 텍스트 파일 쓰기 (AI 산출물 Markdown 등). 같은 경로가 있으면 덮어쓴다 — AI 생성 폴더 전용 */
+export async function writeTextFile(root: DirHandle, path: string, content: string): Promise<void> {
+  const parts = path.split('/');
+  const name = parts.pop()!;
+  const dir = await resolveDir(root, parts.join('/'), true);
+  const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+  await w.write(content);
+  await w.close();
+}
+
 /* ───────── 저장 ───────── */
 
 export interface SaveResult {

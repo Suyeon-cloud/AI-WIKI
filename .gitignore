@@ -4,3 +4,7 @@ dist
 .env
 .env.local
 .env.*.local
+AI_WIKI_구조검토_수정계획.md
+client_secret*.json
+*.pem
+.claude/settings.local.json

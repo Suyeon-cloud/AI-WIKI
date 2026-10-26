@@ -20,7 +20,9 @@ import {
   type CitationStyle,
   type Seg,
 } from '../lib/citation';
-import { Card, Empty, PageHeader, Relevance, SourceTag, StatusBadge } from '../components/ui';
+import { Card, Empty, NeedProject, PageHeader, Relevance, SourceTag, StatusBadge } from '../components/ui';
+import { useProject } from '../store';
+import { useNav } from '../components/ProjectDialog';
 
 /** 자료 출처 유형으로 서지 유형 기본값 추정 (사용자가 바꿀 수 있음) */
 const defaultType = (m: Material): RefType =>
@@ -174,12 +176,15 @@ function BibEditor({ m, style, onClose }: { m: Material; style: CitationStyle; o
 }
 
 export function References() {
-  const { state, dispatch, toast } = useStore();
-  const [rel, setRel] = useState('3');
+  const { dispatch, toast } = useStore();
+  const { project, materials: projectMaterials } = useProject();
+  const [rel, setRel] = useState('1');
   const [src, setSrc] = useState('전체');
   const [bibFilter, setBibFilter] = useState('전체');
   const [style, setStyle] = useState<CitationStyle>(CITATION_STYLES[0]);
   const [editId, setEditId] = useState<string | null>(null);
+  const state = { materials: projectMaterials }; // 현재 프로젝트(폴더)의 자료만
+  const nav = useNav();
 
   const list = useMemo(
     () =>
@@ -191,7 +196,7 @@ export function References() {
             (bibFilter === '전체' || m.bibStatus === bibFilter),
         )
         .sort((a, b) => b.relevance - a.relevance),
-    [state.materials, rel, src, bibFilter],
+    [projectMaterials, rel, src, bibFilter],
   );
   const chosen = state.materials.filter((m) => m.citationIncluded);
   const ready = sortForStyle(chosen.filter((m) => checkBib(m).complete), style);
@@ -211,18 +216,26 @@ export function References() {
     toast(`완성된 참고문헌 ${formatted.length}건을 ${kind.toUpperCase()}로 내보냈습니다.${pending.length ? ` 확인 필요 ${pending.length}건은 제외했습니다.` : ''}`);
   }
 
+  if (!project)
+    return (
+      <>
+        <PageHeader title="참고문헌" desc="서지사항을 정리해 학위논문 참고문헌 목록을 만듭니다." />
+        <NeedProject onCreate={nav.newProject} />
+      </>
+    );
+
   return (
     <>
       <PageHeader
         title="참고문헌"
-        desc="논문 관련도가 높은 자료를 참고문헌 후보로 선별하고, 자료 유형별 서지정보를 확인해 인용 서식을 만듭니다."
-        badges={<><StatusBadge s="real">선택·서지 입력·서식</StatusBadge><StatusBadge s="demo">자동 서지 추출 Demo</StatusBadge></>}
+        desc={`'${project.name}' 자료의 서지사항을 정리해, 학위논문에 그대로 쓸 참고문헌 목록을 만듭니다. AI 집필의 HWPX 참고문헌에도 이 목록이 들어갑니다.`}
+        badges={<><StatusBadge s="real">서지 입력·서식</StatusBadge><span className="chip chip-strong">완성 {ready.length} · 확인 필요 {pending.length}</span></>}
       />
 
       <div className="notice">
-        서지정보는 자동으로 생성하지 않습니다. 자료 유형별 필수 항목(예: 학술지 논문은 저자·연도·제목·학술지명·권·쪽)이 모두 입력되어야{' '}
+        KCI PDF로 가져온 자료는 추출된 서지사항이 미리 채워져 있습니다. 자료 유형별 필수 항목(학술지 논문: 저자·연도·제목·학술지명·권·쪽)이 모두 있어야{' '}
         <span className="ok-tag">서지정보 입력됨</span>이 되고, 부족하면 <span className="warn-tag">서지정보 확인 필요</span>로 남아 완성 목록에서
-        제외됩니다. 서식은 각 양식의 일반 규칙을 적용한 것이므로 제출 전 학과·학술지 규정으로 최종 확인하세요.
+        제외됩니다. 제출 전 학과 규정으로 최종 확인하세요.
       </div>
 
       <div className="filters">
@@ -260,7 +273,7 @@ export function References() {
         {list.length === 0 ? (
           <Empty>조건에 맞는 후보가 없습니다.</Empty>
         ) : (
-          <table className="table">
+          <table className="table ref-candidates">
             <thead>
               <tr>
                 <th style={{ width: 70 }}>선택</th>
@@ -276,7 +289,7 @@ export function References() {
               {list.flatMap((m) => {
                 const check = checkBib(m);
                 const rows = [
-                  <tr key={m.id} className={m.citationIncluded ? '' : 'excluded'}>
+                  <tr key={m.id} className={m.citationIncluded ? 'chosen' : ''}>
                     <td>
                       <label className="switch">
                         <input
@@ -284,7 +297,7 @@ export function References() {
                           checked={m.citationIncluded}
                           onChange={(e) => dispatch({ type: 'update', id: m.id, patch: { citationIncluded: e.target.checked } })}
                         />
-                        <span>{m.citationIncluded ? '선택' : '제외'}</span>
+                        <span className="sr-only">{m.citationIncluded ? '참고문헌에 포함' : '참고문헌에서 제외'}</span>
                       </label>
                     </td>
                     <td className="cell-title">{m.title}</td>
@@ -304,8 +317,8 @@ export function References() {
                       {!check.complete && m.bib && <div className="warn-text">필요: {check.missing.join(', ')}</div>}
                     </td>
                     <td>
-                      <button className="btn btn-sm" onClick={() => setEditId(editId === m.id ? null : m.id)}>
-                        서지정보 입력
+                      <button className={`btn btn-sm bib-btn ${editId === m.id ? 'open' : ''}`} onClick={() => setEditId(editId === m.id ? null : m.id)}>
+                        ✎ 서지정보 입력
                       </button>
                     </td>
                   </tr>,

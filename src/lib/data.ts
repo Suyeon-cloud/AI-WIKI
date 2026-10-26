@@ -26,6 +26,7 @@ import {
 import { DEFAULT_SETTINGS, DEFAULT_WRITING } from '../data/sample';
 import { PARAS, SOURCE_TYPES, uid } from './utils';
 import { bibStatusOf, isRefType, normalizeDoi } from './citation';
+import { aiMaterialToOutput, listOf, newProject, normalizeAiOutput, normalizeEvent, normalizeProject, normalizeThesis } from './projects';
 
 type Obj = Record<string, unknown>;
 
@@ -59,6 +60,12 @@ function normAnalysis(x: unknown): Analysis | undefined {
     connection: str(x.connection) ?? '',
     insights: strArr(x.insights),
     citationCandidate: str(x.citationCandidate) ?? '',
+    method: nonEmpty(x.method),
+    findings: nonEmpty(x.findings),
+    limitations: nonEmpty(x.limitations),
+    usageIdea: nonEmpty(x.usageIdea),
+    model: nonEmpty(x.model),
+    analyzedAt: isoDate(x.analyzedAt),
   };
 }
 
@@ -178,6 +185,9 @@ export function normalizeMaterial(x: unknown, fallbackTitle?: string): Material 
     researchLink: nonEmpty(x.researchLink),
     usage: normUsage(x.usage),
     external: normExternal(x.external),
+    projectId: nonEmpty(x.projectId),
+    abstract: nonEmpty(x.abstract),
+    importedFrom: (['KCI PDF', 'PDF', 'Google Drive', 'Obsidian', '직접 입력'] as const).find((v) => v === x.importedFrom),
   };
   // 저장된 상태값을 믿지 않고 서지정보 내용으로 판단 (유형별 필수 항목이 모두 있어야 '입력됨')
   m.bibStatus = bibStatusOf(m);
@@ -249,9 +259,38 @@ export function parseFullState(x: unknown): StateParseResult {
     seen.add(m.id);
     materials.push(m);
   }
-  const selectedId = typeof x.selectedId === 'string' && seen.has(x.selectedId) ? x.selectedId : null;
+  const settings = normalizeSettings(x.settings);
+  const projects = listOf(x.projects, normalizeProject);
+  const events = listOf(x.events, normalizeEvent);
+  const aiOutputs = listOf(x.aiOutputs, normalizeAiOutput);
+  const theses = listOf(x.theses, normalizeThesis);
+
+  // v2 이하: 기존 연구 설정으로 첫 프로젝트를 만들고 모든 자료를 그 폴더에 넣는다.
+  if (fromVersion < 3 && !projects.length && (materials.length || isObj(x.settings))) {
+    const p = newProject({
+      name: settings.topic,
+      topic: settings.topic,
+      keywords: settings.keywords.filter((k) => k.trim()),
+      overview: settings.overview,
+      defaultView: settings.defaultView,
+    });
+    projects.push(p);
+    events.push({ id: uid(), projectId: p.id, at: p.createdAt, kind: '생성', text: '이전 버전 데이터에서 프로젝트를 만들었습니다.' });
+    for (const m of materials) m.projectId ??= p.id;
+  }
+  // AI가 만든 자료는 라이브러리(원본 자료)에 두지 않고 AI 산출물로 옮긴다.
+  const kept: Material[] = [];
+  for (const m of materials) {
+    const pid = m.projectId ?? projects[0]?.id;
+    if (m.origin === 'AI 생성 자료' && pid) aiOutputs.push(aiMaterialToOutput(m, pid));
+    else kept.push(m);
+  }
+  const keptIds = new Set(kept.map((m) => m.id));
+  const selectedId = typeof x.selectedId === 'string' && keptIds.has(x.selectedId) ? x.selectedId : null;
+  const currentProjectId =
+    typeof x.currentProjectId === 'string' && projects.some((p) => p.id === x.currentProjectId) ? x.currentProjectId : (projects[0]?.id ?? null);
   return {
-    state: { materials, settings: normalizeSettings(x.settings), writing: normalizeWriting(x.writing), selectedId },
+    state: { materials: kept, settings, writing: normalizeWriting(x.writing), selectedId, projects, currentProjectId, events, aiOutputs, theses },
     fromVersion,
     dropped,
     hasWriting: isObj(x.writing),
@@ -271,6 +310,11 @@ export function buildBackup(state: AppState) {
     writing: state.writing,
     selectedId: state.selectedId,
     materials: state.materials,
+    projects: state.projects,
+    currentProjectId: state.currentProjectId,
+    events: state.events,
+    aiOutputs: state.aiOutputs,
+    theses: state.theses,
   };
 }
 
@@ -351,10 +395,12 @@ export function mergeMaterial(existing: Material, incoming: Partial<Material>): 
 export function planImport(
   existing: Material[],
   incoming: { partial: Partial<Material>; source: string; fallbackTitle: string }[],
+  /** 중복 의심(URL·파일·제목) 판단 범위 — 지정하면 이 자료들과만 비교 (예: 현재 프로젝트 자료) */
+  duplicateScope: Material[] = existing,
 ): { items: ImportItem[]; errors: ImportError[] } {
   const byId = new Map(existing.map((m) => [m.id, m]));
   const keyOwner = new Map<string, Material>();
-  for (const m of existing) for (const k of duplicateKeys(m)) if (!keyOwner.has(k)) keyOwner.set(k, m);
+  for (const m of duplicateScope) for (const k of duplicateKeys(m)) if (!keyOwner.has(k)) keyOwner.set(k, m);
 
   const items: ImportItem[] = [];
   const errors: ImportError[] = [];
