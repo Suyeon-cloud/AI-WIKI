@@ -556,3 +556,95 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 .ref-candidates .bib-btn { border-color: #b9cce8; color: var(--accent); background: var(--panel); white-space: nowrap; }
 .ref-candidates .bib-btn:hover:not(:disabled) { background: var(--accent-soft); }
 .ref-candidates .bib-btn.open { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+
+/* ───────── v3: 저장소 불러오는 중 ───────── */
+.boot-loading { display: grid; place-items: center; height: 100vh; color: var(--muted); font-size: 14px; }
+
+/* ───────── v3: 가져오기 — AI 관련도 제안 ───────── */
+.rel-pick { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; flex-shrink: 0; }
+.rel-pick select { width: auto; padding: 2px 6px; font-size: 12px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel); }
+.rel-by { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: #f0efeb; color: var(--muted); }
+.rel-by.ai { background: var(--accent-soft); color: var(--accent); }
+.rel-status { font-size: 12px; color: var(--accent); margin-right: 8px; }
+.rejudge-card { border-color: #b9cce8; }
+.rejudge-card tr.chosen > td { background: #f3f7fd; }
+.rejudge-card .rel-pick { margin-left: 0; }
+
+/* ───────── v3: 팝업 창 (Modal) ───────── */
+.modal-back {
+  position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: rgba(28, 36, 52, 0.45);
+}
+.modal {
+  display: flex; flex-direction: column; width: min(560px, 100%); max-height: calc(100vh - 48px);
+  background: var(--panel); border-radius: 12px; box-shadow: 0 18px 48px rgba(20, 30, 50, 0.25); overflow: hidden;
+}
+.modal-wide { width: min(880px, 100%); }
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+.modal-head h3 { font-size: 16px; }
+.modal-x { border: 0; background: none; font-size: 22px; line-height: 1; color: var(--muted); cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.modal-x:hover:not(:disabled) { background: #f0efeb; color: var(--text); }
+.modal-x:disabled { opacity: 0.4; cursor: not-allowed; }
+.modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; min-height: 0; }
+.modal-body > p:first-child { margin-top: 0; }
+.modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding: 12px 20px; border-top: 1px solid var(--line); background: #fafaf8; }
+.modal .sub-title { margin-top: 18px; }
+.modal .notice { margin-top: 14px; }
+.req { color: var(--danger); }
+
+/* 새 프로젝트 창 · KCI 확인 창의 입력칸 */
+.modal .form-grid input, .modal .form-grid select, .modal .form-grid textarea {
+  width: 100%; padding: 7px 9px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel); font-size: 13px; color: var(--text);
+}
+.compact-grid { margin: 8px 0 4px 28px; padding: 12px; background: #fafaf8; border: 1px solid var(--line); border-radius: 8px; }
+
+/* KCI 가져올 자료 확인 목록 */
+.review-list { list-style: none; margin: 8px 0 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; }
+.review-list > li { border-bottom: 1px solid var(--line); }
+.review-list > li:last-child { border-bottom: 0; }
+.review-list > li.open { background: #f7f9fc; }
+.review-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; cursor: pointer; }
+.review-row > input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--accent); flex-shrink: 0; }
+.review-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.review-main > b { font-size: 13.5px; overflow-wrap: anywhere; }
+.review-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px; }
+.review-tags .chip { margin: 0; }
+.review-tags .rel-pick { margin-left: 0; }
+
+/* Google Drive 목록 창 */
+.drive-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.drive-bar .crumbs { flex: 1; min-width: 200px; font-size: 13px; }
+.drive-bar input { width: 200px; padding: 6px 9px; border: 1px solid var(--line-2); border-radius: 6px; font-size: 13px; }
+.drive-browser { list-style: none; margin: 0 0 8px; padding: 0; border: 1px solid var(--line); border-radius: 8px; max-height: 46vh; overflow-y: auto; }
+.drive-browser li { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #f0eeea; font-size: 13px; cursor: pointer; }
+.drive-browser li:last-child { border-bottom: 0; }
+.drive-browser li:hover { background: #f7f9fc; }
+.drive-browser li.is-folder { font-weight: 600; }
+.drive-browser li.disabled { cursor: default; color: var(--muted); }
+.drive-browser li.disabled:hover { background: none; }
+.drive-browser li .import-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.drive-browser input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); }
+.fi { width: 20px; text-align: center; flex-shrink: 0; }
+
+/* Obsidian·Drive로 보내기 창 */
+.send-list { list-style: none; margin: 10px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.send-list li { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fafaf8; font-size: 13px; }
+
+/* AI 결과물 보기 창 */
+.ai-banner { color: var(--accent); background: var(--accent-soft); }
+.md-view { font-size: 13.5px; line-height: 1.75; }
+.md-view h2 { font-size: 15px; margin: 18px 0 6px; color: var(--accent); }
+.md-view h3, .md-view h4 { font-size: 14px; margin: 14px 0 4px; }
+.md-view p { margin: 0 0 8px; }
+.md-view ul { margin: 0 0 8px; padding-left: 20px; }
+
+/* 프로젝트가 없을 때 안내 */
+.need-project { max-width: 520px; margin: 48px auto; padding: 32px; text-align: center; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.need-icon { font-size: 36px; margin-bottom: 8px; }
+.need-project h2 { font-size: 18px; margin-bottom: 6px; }
+.need-project p { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 0 0 16px; word-break: keep-all; }
+
+@media (max-width: 720px) { .modal .form-grid { grid-template-columns: 1fr 1fr; } .modal-back { padding: 10px; } }
+.modal .form-grid label { display: block; }
+.modal .form-grid label > input, .modal .form-grid label > select, .modal .form-grid label > textarea { display: block; margin-top: 4px; }
+.modal .form-grid .req { margin-left: 2px; }

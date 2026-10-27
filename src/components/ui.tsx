@@ -14,7 +14,7 @@ const STATUS_TITLE: Record<Status, string> = {
   real: '브라우저에서 실제로 동작하는 기능입니다.',
   demo: '외부 AI/서비스를 호출하지 않고 준비된 샘플 결과를 보여줍니다.',
   planned: '현재 프로토타입에서는 동작하지 않으며 추후 연동 예정입니다.',
-  local: '이 브라우저의 localStorage에만 저장됩니다. 서버·클라우드에 저장되지 않습니다.',
+  local: '이 브라우저(IndexedDB)에만 저장됩니다. 서버·클라우드에 저장되지 않습니다.',
   ai: 'Claude API를 실제로 호출합니다. 결과는 연구자가 검토해야 하는 AI 생성물입니다.',
 };
 

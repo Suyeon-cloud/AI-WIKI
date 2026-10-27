@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { RelevancePick, RelevanceStatus, useAiRelevance } from './RelevancePick';
 import type { Material } from '../types';
 import { newMaterial, useStore, useProject } from '../store';
 import { readPdf } from '../lib/pdf';
@@ -104,6 +105,12 @@ export function KciReview({ items, onClose, onDone }: { items: ReviewItem[]; onC
   const [picked, setPicked] = useState<Set<string>>(() => new Set(items.filter((x) => x.meta && !x.duplicateOf).map((x) => x.key)));
   const [open, setOpen] = useState<string | null>(items.length === 1 ? items[0].key : null);
   const [saveText, setSaveText] = useState(true);
+  // 관련도 초기값: AI가 프로젝트 주제 기준으로 판단 → 연구자가 확인·수정
+  const relTargets = useMemo(
+    () => items.filter((r) => r.meta).map((r) => ({ key: r.key, title: r.meta!.title, keywords: r.meta!.keywords, text: r.meta!.abstractKo || r.meta!.abstractEn || r.text })),
+    [items],
+  );
+  const ai = useAiRelevance(relTargets);
 
   const toggle = (k: string) =>
     setPicked((s) => {
@@ -133,6 +140,7 @@ export function KciReview({ items, onClose, onDone }: { items: ReviewItem[]; onC
         url: k.doi ? `https://doi.org/${k.doi}` : undefined,
         bib: kciToBib(k),
         citationIncluded: true,
+        relevance: ai.rel[r.key]?.relevance ?? 3,
       });
     });
     dispatch({ type: 'addMany', materials: ms });
@@ -157,8 +165,8 @@ export function KciReview({ items, onClose, onDone }: { items: ReviewItem[]; onC
           <button className="btn" onClick={onClose}>
             취소
           </button>
-          <button className="btn btn-primary" onClick={add} disabled={!picked.size}>
-            선택한 {picked.size}건 라이브러리에 추가
+          <button className="btn btn-primary" onClick={add} disabled={!picked.size || ai.running}>
+            {ai.running ? 'AI 관련도 판단 중…' : `선택한 ${picked.size}건 라이브러리에 추가`}
           </button>
         </>
       }
@@ -167,6 +175,7 @@ export function KciReview({ items, onClose, onDone }: { items: ReviewItem[]; onC
         추출한 서지사항·초록을 확인하세요. 체크한 자료만 <b>{project?.name ?? '미분류'}</b> 폴더에 추가됩니다. 행을 누르면 내용을 고칠 수 있습니다.
       </p>
       <div className="actions" style={{ marginTop: 0 }}>
+        <RelevanceStatus status={ai.status} onCancel={ai.cancel} />
         <button className="link small" onClick={() => setPicked(new Set(okRows.map((r) => r.key)))}>
           모두 선택
         </button>
@@ -191,6 +200,7 @@ export function KciReview({ items, onClose, onDone }: { items: ReviewItem[]; onC
                   <span className="err small">{r.error}</span>
                 )}
                 <span className="review-tags">
+                  {r.meta && <RelevancePick value={3} choice={ai.rel[r.key]} onChange={(v) => ai.choose(r.key, v)} />}
                   <span className="chip chip-muted">{r.src.name} · {formatSize(r.src.size)}</span>
                   {r.meta?.doi && <span className="chip">DOI</span>}
                   {r.meta && <span className={r.meta.abstractKo || r.meta.abstractEn ? 'chip' : 'warn-tag'}>{r.meta.abstractKo || r.meta.abstractEn ? '초록 있음' : '초록 없음'}</span>}

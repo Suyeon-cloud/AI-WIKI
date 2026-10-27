@@ -12,7 +12,8 @@ import {
 } from './types';
 import { DEFAULT_SETTINGS, DEFAULT_WRITING } from './data/sample';
 import { uid } from './lib/utils';
-import { deriveViewStatus } from './lib/data';
+import { deriveViewStatus, parseFullState } from './lib/data';
+import { idbAvailable, idbKeepCopy, idbLoadRaw, idbSave } from './lib/idb-store';
 import { emptyThesis } from './lib/projects';
 import { bibStatusOf } from './lib/citation';
 import { browserStorage, loadState, saveState } from './lib/persist';
@@ -172,7 +173,7 @@ interface Ctx {
   dispatch: React.Dispatch<Action>;
   toast: (text: string, kind?: Toast['kind']) => void;
   toasts: Toast[];
-  /** 마지막 localStorage 저장 실패 사유 (정상 저장 시 null) */
+  /** 마지막 브라우저 저장(IndexedDB 또는 localStorage) 실패 사유 (정상 저장 시 null) */
   storageError: string | null;
   /** 손상된 저장 데이터를 보호하기 위해 자동 저장이 중지된 상태 */
   saveBlocked: boolean;
@@ -210,18 +211,55 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     boot.notices.forEach((n) => toast(n.text, n.kind));
   }, [boot, toast]);
 
+  // 저장소: IndexedDB를 쓰고, 쓸 수 없는 환경에서만 기존 localStorage를 쓴다.
+  // 처음 실행 시 IndexedDB가 비어 있으면 localStorage에서 읽은 상태(boot)를 그대로 IndexedDB에 옮겨 저장한다 (localStorage 원본은 지우지 않음).
+  const [mode, setMode] = useState<'loading' | 'idb' | 'local'>(idbAvailable() ? 'loading' : 'local');
   useEffect(() => {
-    if (saveBlocked) return; // 읽지 못한 원본을 덮어쓰지 않음
-    const r = saveState(browserStorage(), state);
-    if (r.ok) {
-      errRef.current = null;
-      setStorageError(null);
-    } else {
-      if (!errRef.current) toast(`${r.reason}: 변경 내용이 저장되지 않았습니다. 연구 설정 화면에서 전체 백업 파일을 받아 두세요.`, 'error');
-      errRef.current = r.reason;
-      setStorageError(r.reason);
-    }
-  }, [state, saveBlocked, toast]);
+    if (mode !== 'loading') return;
+    let alive = true;
+    idbLoadRaw()
+      .then(async (raw) => {
+        if (!alive) return;
+        if (raw) {
+          try {
+            const r = parseFullState(JSON.parse(raw));
+            rawDispatch({ type: 'restore', state: r.state });
+            if (r.dropped) toast(`저장 자료 중 ${r.dropped}건은 형식이 올바르지 않아 불러오지 못했습니다.`, 'error');
+          } catch {
+            await idbKeepCopy(raw);
+            toast('브라우저 저장 데이터를 읽지 못해 원본을 따로 보관했습니다. 연구 설정에서 백업 파일로 복원하세요.', 'error');
+          }
+        } else if (boot.state.projects.length || boot.state.materials.length) {
+          toast('저장 공간을 IndexedDB로 옮겼습니다. 이제 용량 걱정 없이 자료를 저장할 수 있습니다.', 'info');
+        }
+        setSaveBlocked(false); // IndexedDB에 저장하므로 localStorage 원본은 덮어쓰지 않는다
+        setMode('idb');
+      })
+      .catch(() => alive && setMode('local'));
+    return () => {
+      alive = false;
+    };
+  }, [mode, boot, toast]);
+
+  // IndexedDB 저장은 비동기이므로 순서대로 처리한다 (늦게 끝난 이전 저장이 최신 상태를 덮어쓰지 않도록)
+  const saving = useRef<Promise<unknown>>(Promise.resolve());
+  useEffect(() => {
+    if (mode === 'loading' || saveBlocked) return; // 불러오기 전에는 저장하지 않음 · 읽지 못한 원본을 덮어쓰지 않음
+    const report = (r: { ok: true } | { ok: false; reason: string }) => {
+      if (r.ok) {
+        errRef.current = null;
+        setStorageError(null);
+      } else {
+        if (!errRef.current) toast(`${r.reason}: 변경 내용이 저장되지 않았습니다. 연구 설정 화면에서 전체 백업 파일을 받아 두세요.`, 'error');
+        errRef.current = r.reason;
+        setStorageError(r.reason);
+      }
+    };
+    if (mode === 'local') report(saveState(browserStorage(), state));
+    else saving.current = saving.current.then(() => idbSave(state)).then(report);
+  }, [state, saveBlocked, mode, toast]);
+
+  if (mode === 'loading') return <div className="boot-loading">자료를 불러오는 중…</div>;
 
   return <StoreContext.Provider value={{ state, dispatch, toast, toasts, storageError, saveBlocked, resumeSave }}>{children}</StoreContext.Provider>;
 }

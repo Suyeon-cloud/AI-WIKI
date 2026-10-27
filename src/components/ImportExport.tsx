@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { RelevancePick, RelevanceStatus, useAiRelevance } from './RelevancePick';
 import type { AppState, Material } from '../types';
 import { useStore } from '../store';
 import { downloadFile, formatDate, markdownToHtml, materialToMarkdown, materialToText, safeFileName, wrapHtml } from '../lib/utils';
@@ -35,7 +36,8 @@ const STATUS_CLASS: Record<ImportStatus, string> = {
 };
 
 type Pending =
-  | { mode: 'merge'; items: ImportItem[]; errors: ImportError[]; note?: string }
+  /** judge: 새로 들어오는 자료의 관련도를 AI가 판단 (백업 병합에는 쓰지 않음 — 백업의 관련도를 유지) */
+  | { mode: 'merge'; items: ImportItem[]; errors: ImportError[]; note?: string; judge?: boolean }
   | { mode: 'backup'; backup: StateParseResult; source: string; exportedAt?: string };
 
 /**
@@ -126,10 +128,25 @@ export function ImportFlow({
       items: plan.items,
       errors: [...errors, ...plan.errors],
       note: backups.length ? '전체 백업 파일은 다른 파일과 함께 선택되어 자료만 병합합니다. 설정·집필 상태는 바뀌지 않습니다.' : undefined,
+      judge: true,
     });
   }
 
-  function applyMerge(items: ImportItem[]) {
+  // 새로 추가될 자료(추가·중복 의심)의 관련도 초기값을 AI가 판단 → 목록에서 연구자가 확인·수정
+  const relTargets = useMemo(
+    () =>
+      pending?.mode === 'merge' && pending.judge
+        ? pending.items
+            .map((it, i) => ({ it, i }))
+            .filter(({ it }) => it.status === 'add' || it.status === 'duplicate')
+            .map(({ it, i }) => ({ key: String(i), title: it.incoming.title, keywords: it.incoming.keywords, text: it.incoming.abstract ?? it.incoming.content }))
+        : null,
+    [pending],
+  );
+  const ai = useAiRelevance(relTargets);
+
+  function applyMerge(rawItems: ImportItem[]) {
+    const items = rawItems.map((it, i) => (ai.rel[String(i)] ? { ...it, incoming: { ...it.incoming, relevance: ai.rel[String(i)].relevance } } : it));
     const { add, update } = resolveImport(items, conflict, duplicate);
     if (!add.length && !update.length) {
       onApplied?.(items.filter((i) => i.status === 'same').map((i) => i.incoming));
@@ -179,12 +196,20 @@ export function ImportFlow({
             </span>
           </div>
           {pending.note && <p className="muted small">{pending.note}</p>}
+          {relTargets && relTargets.length > 0 && (
+            <p className="small">
+              <RelevanceStatus status={ai.status} onCancel={ai.cancel} />
+            </p>
+          )}
           <ul className="import-list">
             {pending.items.map((it, i) => (
               <li key={i}>
                 <span className={STATUS_CLASS[it.status]}>{IMPORT_STATUS_LABEL[it.status]}</span>
                 <span className="import-title" title={it.source}>{it.incoming.title}</span>
                 {it.reason && <span className="muted small">{it.reason}</span>}
+                {relTargets?.some((t) => t.key === String(i)) && (
+                  <RelevancePick value={it.incoming.relevance} choice={ai.rel[String(i)]} onChange={(v) => ai.choose(String(i), v)} />
+                )}
               </li>
             ))}
             {pending.errors.map((e, i) => (
@@ -216,7 +241,9 @@ export function ImportFlow({
           )}
           <p className="muted small">갱신은 가져온 파일에 있는 항목만 바꾸고, 파일에 없는 분석 결과·내 관점·서지정보는 유지합니다.</p>
           <div className="actions">
-            <button className="btn btn-primary" onClick={() => applyMerge(pending.items)}>적용</button>
+            <button className="btn btn-primary" onClick={() => applyMerge(pending.items)} disabled={ai.running}>
+              {ai.running ? 'AI 관련도 판단 중…' : '적용'}
+            </button>
             <button className="btn" onClick={close}>취소</button>
           </div>
         </div>

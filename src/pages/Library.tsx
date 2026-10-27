@@ -9,6 +9,7 @@ import { Card, Empty, Modal, PageHeader, Relevance, SourceTag, StatusBadge } fro
 import { ImportExport } from '../components/ImportExport';
 import { useNav } from '../components/ProjectDialog';
 import { useConnections } from '../components/Sidebar';
+import { RelevancePick, RelevanceStatus, useAiRelevance } from '../components/RelevancePick';
 
 type Folder = { kind: 'project'; id: string } | { kind: 'all' } | { kind: 'none' };
 
@@ -233,6 +234,64 @@ function SendDialog({ ms, target, onClose }: { ms: Material[]; target: 'obsidian
   );
 }
 
+/** 이미 있는 자료의 관련도를 AI가 현재 프로젝트 기준으로 다시 제안 → 연구자가 확인·수정 후 적용 (관련도 외 내용은 그대로) */
+function RejudgePanel({ ms, onClose }: { ms: Material[]; onClose: () => void }) {
+  const { dispatch, toast } = useStore();
+  const { project } = useProject();
+  const targets = useMemo(() => ms.map((m) => ({ key: m.id, title: m.title, keywords: m.keywords, text: m.abstract ?? m.content })), [ms]);
+  const ai = useAiRelevance(targets);
+  const changes = ms.filter((m) => ai.rel[m.id] && ai.rel[m.id].relevance !== m.relevance);
+
+  function apply() {
+    changes.forEach((m) => dispatch({ type: 'update', id: m.id, patch: { relevance: ai.rel[m.id].relevance } }));
+    if (project && changes.length) dispatch({ type: 'log', event: { projectId: project.id, kind: '분석', text: `자료 ${changes.length}건의 관련도를 AI 제안을 확인해 바꿨습니다.` } });
+    toast(changes.length ? `관련도 ${changes.length}건을 바꿨습니다.` : '바뀐 관련도가 없습니다.', changes.length ? 'success' : 'info');
+    onClose();
+  }
+
+  return (
+    <Card
+      title={`AI 관련도 다시 판단 (${ms.length}건)`}
+      extra={<StatusBadge s="ai">'{project?.name}' 주제 기준</StatusBadge>}
+      className="rejudge-card"
+    >
+      <p className="small">
+        <RelevanceStatus status={ai.status} onCancel={ai.cancel} />
+      </p>
+      <p className="muted small">AI 제안을 확인하고 필요하면 바꾼 뒤 적용하세요. 관련도만 바뀌고 나의 관점·메모·서지정보는 그대로입니다.</p>
+      <table className="table compact">
+        <thead>
+          <tr>
+            <th>자료</th>
+            <th>현재</th>
+            <th>바꿀 관련도</th>
+            <th>AI 판단 이유</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ms.map((m) => {
+            const c = ai.rel[m.id];
+            return (
+              <tr key={m.id} className={c && c.relevance !== m.relevance ? 'chosen' : ''}>
+                <td className="cell-title">{m.title}</td>
+                <td><Relevance value={m.relevance} /></td>
+                <td><RelevancePick value={m.relevance} choice={c} onChange={(v) => ai.choose(m.id, v)} /></td>
+                <td className="small muted">{c?.reason ?? '-'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div className="actions">
+        <button className="btn btn-primary" onClick={apply} disabled={ai.running}>
+          {ai.running ? 'AI 관련도 판단 중…' : `적용 (변경 ${changes.length}건)`}
+        </button>
+        <button className="btn" onClick={() => { ai.cancel(); onClose(); }}>취소</button>
+      </div>
+    </Card>
+  );
+}
+
 export function Library() {
   const { state, dispatch, toast } = useStore();
   const { project } = useProject();
@@ -245,6 +304,7 @@ export function Library() {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [send, setSend] = useState<'obsidian' | 'drive' | null>(null);
   const [confirmBulkDel, setConfirmBulkDel] = useState(false);
+  const [rejudge, setRejudge] = useState<Material[] | null>(null);
 
   // 사이드바에서 프로젝트를 바꾸면 그 폴더를 보여 준다
   useEffect(() => {
@@ -357,6 +417,16 @@ export function Library() {
               </label>
               <button className="btn btn-sm" onClick={() => (conn.obsidian ? setSend('obsidian') : toast('연구 설정에서 Obsidian 폴더를 먼저 연결하세요.', 'info'))}>📓 Obsidian으로 보내기</button>
               <button className="btn btn-sm" onClick={() => (conn.drive ? setSend('drive') : toast('연구 설정에서 Google Drive를 먼저 연결하세요.', 'info'))}>☁ Drive로 보내기</button>
+              <button
+                className="btn btn-sm"
+                onClick={() => {
+                  if (!conn.ai) return toast('AI 관련도 판단에는 Claude API 키가 필요합니다. 연구 설정 → AI 설정에서 입력하세요.', 'info');
+                  if (folder.kind !== 'project') return toast('프로젝트 폴더를 선택한 상태에서 사용하세요. 관련도는 프로젝트 주제를 기준으로 판단합니다.', 'info');
+                  setRejudge(checkedItems);
+                }}
+              >
+                ◎ AI 관련도 다시 판단
+              </button>
               {confirmBulkDel ? (
                 <>
                   <button className="btn btn-sm btn-danger" onClick={() => { dispatch({ type: 'removeMany', ids: [...checked] }); toast(`${checked.size}건을 삭제했습니다.`); setChecked(new Set()); setConfirmBulkDel(false); }}>삭제 확인</button>
@@ -368,6 +438,8 @@ export function Library() {
               <button className="link small" onClick={() => setChecked(new Set())}>선택 해제</button>
             </div>
           )}
+
+          {rejudge && <RejudgePanel ms={rejudge} onClose={() => { setRejudge(null); setChecked(new Set()); }} />}
 
           <div className="lib-layout">
             <Card className="lib-table">

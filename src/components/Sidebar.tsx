@@ -95,7 +95,7 @@ export function Sidebar({ page, onNavigate }: { page: PageKey; onNavigate: (p: P
             <i /> Google Drive {c.drive ? '연결됨' : '미연결'}
           </button>
         </div>
-        <p>자료는 이 브라우저(localStorage)에 저장됩니다. 연구 설정에서 정기적으로 백업하세요.</p>
+        <p>자료는 이 브라우저(IndexedDB)에 저장됩니다. 연구 설정에서 정기적으로 백업하세요.</p>
       </div>
     </aside>
   );

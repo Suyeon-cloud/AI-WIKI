@@ -149,7 +149,7 @@ Google Drive와 Obsidian은 새 자료를 찾아 주는 **수집원이 아니라
 
 | 데이터 | 저장 위치 | 비고 |
 |---|---|---|
-| 프로젝트 · 자료 · AI 결과물 · 집필 원고 · 활동 기록 | 브라우저 **localStorage** (`ai-wiki:v2`) | 서버로 전송되지 않음. 이전 버전 데이터는 처음 실행 시 자동 변환 |
+| 프로젝트 · 자료 · AI 결과물 · 집필 원고 · 활동 기록 | 브라우저 **IndexedDB** (`ai-wiki-data` DB, 키 `ai-wiki:v2`) | 서버로 전송되지 않음. 용량 제한이 큰 IndexedDB를 사용하며, 예전 localStorage 데이터는 처음 실행 시 자동으로 옮김(원본은 남겨 둠). IndexedDB를 쓸 수 없는 환경에서만 localStorage 사용 |
 | Google Drive access token | 메모리 + 현재 탭의 **sessionStorage** (`ai-wiki:drive-token`) | 같은 탭 새로고침 시 만료(약 1시간) 전까지 복원, 연결 해제·인증 실패·만료·탭 종료 시 제거. localStorage에는 저장하지 않음 |
 | Claude API key (앱에서 입력) | 기본: 현재 탭의 **sessionStorage** (`ai-wiki:anthropic-key`) / "이 브라우저에 기억" 선택 시: **localStorage** | 백업 파일에 포함되지 않음. "지우기"로 삭제 |
 | Obsidian Vault 폴더 연결 | 브라우저 **IndexedDB** | 폴더 접근 권한 정보만 보관 |
