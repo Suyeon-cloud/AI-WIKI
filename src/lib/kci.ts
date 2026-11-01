@@ -24,7 +24,7 @@ export interface KciMeta {
   abstractEn: string;
   keywords: string[];
   /** 각 항목을 어디서 얻었는지 */
-  source: 'rule' | 'ai' | 'rule+ai';
+  source: 'rule' | 'ai' | 'rule+ai' | 'api';
 }
 
 const clean = (s: string | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
@@ -150,7 +150,7 @@ export async function refineWithAi(pdf: PdfText, rule: KciMeta, signal?: AbortSi
   const { data } = await generate<Omit<KciMeta, 'source'>>({
     system:
       '너는 한국 학술논문 PDF에서 서지사항을 정확히 옮겨 적는 도우미다. 주어진 텍스트에 실제로 있는 내용만 옮기고, 없는 항목은 빈 값으로 둔다. 추측하거나 만들어 내지 않는다.',
-    content: `다음은 KCI 학술논문 PDF의 앞부분 텍스트다. 서지사항·초록·주제어를 추출하라.\n\n파일명: ${rule.title}\n\n${text}`,
+    content: `다음은 학술논문 PDF의 앞부분 텍스트다. 서지사항·초록·주제어를 추출하라.\n\n파일명: ${rule.title}\n\n${text}`,
     schema: SCHEMA as unknown as Record<string, unknown>,
     maxTokens: 8000,
     effort: 'low',

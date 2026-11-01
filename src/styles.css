@@ -673,3 +673,14 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 
 .cloud-save-banner { position: fixed; bottom: 12px; right: 16px; z-index: 80; padding: 8px 14px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #334155; font-size: 12px; max-width: min(640px, 90vw); box-shadow: 0 2px 10px #0001; }
 .cloud-save-error { background: #fff1f2; border-color: #fda4af; color: #9f1239; }
+
+/* ───────── KCI 논문 검색 ───────── */
+.kci-search-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.kci-search-bar select, .kci-search-bar input { padding: 7px 9px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel); font-size: 13px; }
+.kci-q { flex: 1 1 260px; min-width: 0; }
+.kci-year { width: 88px; }
+.kci-result-head { margin-top: 12px; }
+.kci-abstract { margin-top: 2px; font-size: 12.5px; }
+.kci-abstract summary { cursor: pointer; color: var(--accent); }
+.kci-abstract p { margin: 4px 0 0; line-height: 1.6; word-break: keep-all; }
+.kci-pager { justify-content: center; margin-top: 10px; }

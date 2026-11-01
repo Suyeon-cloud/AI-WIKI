@@ -82,7 +82,7 @@ function Detail({ m }: { m: Material }) {
         </dd>
         <dt>유형 · 출처</dt>
         <dd>
-          <SourceTag type={m.sourceType} /> {m.importedFrom && <span className="chip chip-muted">{m.importedFrom}</span>}
+          <SourceTag type={m.sourceType} /> {m.importedFrom && <span className="chip chip-muted">{m.importedFrom === 'KCI PDF' ? 'PDF' : m.importedFrom}</span>}
         </dd>
         <dt>핵심 키워드</dt>
         <dd className="chips">{m.keywords.length ? m.keywords.map((k) => <span key={k} className="chip">{k}</span>) : <span className="muted">없음</span>}</dd>

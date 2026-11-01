@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { requireGoogleUser } from './auth.mjs';
 const MODEL = 'claude-opus-5-5';
 const LIMIT = 4_000_000;
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
@@ -49,19 +50,8 @@ export function createClaudeHandler(env, deps = {}) {
   const makeStream = deps.makeStream ?? ((params, options) => new Anthropic({ apiKey: options.apiKey, maxRetries: 0, timeout: 240000 }).beta.messages.stream(params, { signal: options.signal }));
   return async (request) => {
     if (!['GET', 'POST'].includes(request.method)) return error(405, '지원하지 않는 요청입니다.');
-    const token = request.headers.get('authorization')?.match(/^Bearer ([^ ]+)$/i)?.[1];
-    if (!token) return error(401, 'Google 계정으로 다시 로그인해 주세요.');
-    const url = env.SUPABASE_URL || env.VITE_SUPABASE_URL;
-    const publicKey = env.SUPABASE_PUBLISHABLE_KEY || env.VITE_SUPABASE_PUBLISHABLE_KEY;
-    if (!url || !publicKey) return error(503, '서버의 로그인 연결 설정이 필요합니다.');
-    let user;
-    try {
-      const result = await fetchUser(`${url}/auth/v1/user`, { headers: { apikey: publicKey, Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
-      if (!result.ok) return error(401, '로그인이 만료되었습니다. 다시 로그인해 주세요.');
-      user = await result.json();
-    } catch { return error(503, '로그인을 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.'); }
-    if (!user?.id || !user.email_confirmed_at || !user.identities?.some((i) => i.provider === 'google'))
-      return error(403, '이메일 확인이 완료된 Google 계정으로 로그인해 주세요.');
+    const auth = await requireGoogleUser(request, env, fetchUser);
+    if (auth.denied) return auth.denied;
     if (request.method === 'GET') return Response.json({ ready: true, mode: 'byok', model: MODEL }, { headers });
     if (Number(request.headers.get('content-length')) > LIMIT) return error(413, '자료가 너무 큽니다. PDF는 텍스트 추출로 가져오거나 범위를 줄여 주세요.');
     let input;

@@ -187,7 +187,7 @@ export function normalizeMaterial(x: unknown, fallbackTitle?: string): Material 
     external: normExternal(x.external),
     projectId: nonEmpty(x.projectId),
     abstract: nonEmpty(x.abstract),
-    importedFrom: (['KCI PDF', 'PDF', 'Google Drive', 'Obsidian', '직접 입력'] as const).find((v) => v === x.importedFrom),
+    importedFrom: (['KCI PDF', 'KCI Open API', 'PDF', 'Google Drive', 'Obsidian', '직접 입력'] as const).find((v) => v === x.importedFrom),
   };
   // 저장된 상태값을 믿지 않고 서지정보 내용으로 판단 (유형별 필수 항목이 모두 있어야 '입력됨')
   m.bibStatus = bibStatusOf(m);

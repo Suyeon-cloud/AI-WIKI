@@ -70,8 +70,8 @@ export interface Material {
   external?: ExternalLinks; // 외부 연결 정보 (Drive/Obsidian 연동 단계에서 사용)
   // ── v3 추가 필드 ──
   projectId?: string; // 소속 연구 프로젝트(라이브러리 폴더). 없으면 '미분류'
-  abstract?: string; // 초록 (KCI PDF 등에서 추출)
-  importedFrom?: 'KCI PDF' | 'PDF' | 'Google Drive' | 'Obsidian' | '직접 입력';
+  abstract?: string; // 초록 (논문 PDF·KCI 검색 등에서 얻음)
+  importedFrom?: 'KCI PDF' | 'KCI Open API' | 'PDF' | 'Google Drive' | 'Obsidian' | '직접 입력';
 }
 
 /** 참고문헌 자료 유형 */

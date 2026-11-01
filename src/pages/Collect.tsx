@@ -5,16 +5,18 @@ import { PARAS, extractYouTubeId, isValidUrl, ytThumb } from '../lib/utils';
 import { driveConfigured } from '../lib/drive';
 import { Card, NeedProject, PageHeader, StatusBadge } from '../components/ui';
 import { KciImport } from '../components/KciImport';
+import { KciSearch } from '../components/KciSearch';
 import { DriveImportModal } from '../components/DriveImport';
 import { ImportFlow } from '../components/ImportExport';
 import { ObsidianSync } from '../components/ObsidianSync';
 import { useConnections } from '../components/Sidebar';
 import { useNav } from '../components/ProjectDialog';
 
-type Tab = 'kci' | 'web' | 'youtube' | 'file';
+type Tab = 'search' | 'pdf' | 'web' | 'youtube' | 'file';
 
 const TABS: { key: Tab; label: string; desc: string }[] = [
-  { key: 'kci', label: 'KCI 논문 PDF', desc: '초록·서지사항 자동 추출' },
+  { key: 'search', label: 'KCI 검색', desc: '논문을 찾아 체크해 가져오기' },
+  { key: 'pdf', label: '논문 PDF', desc: '초록·서지사항 자동 추출' },
   { key: 'web', label: '웹 자료', desc: 'URL과 제목으로 등록' },
   { key: 'youtube', label: 'YouTube', desc: '영상 링크 등록' },
   { key: 'file', label: 'Markdown · 파일', desc: '.md · .txt · 백업 JSON' },
@@ -60,7 +62,7 @@ export function Collect() {
   const { project, materials } = useProject();
   const nav = useNav();
   const c = useConnections();
-  const [tab, setTab] = useState<Tab>('kci');
+  const [tab, setTab] = useState<Tab>('search');
   const [kw, setKw] = useState('');
   const [para, setPara] = useState<Para>('Resources');
   const [rel, setRel] = useState(3);
@@ -123,8 +125,17 @@ export function Collect() {
         ))}
       </div>
 
-      {tab === 'kci' && (
-        <Card title="KCI 논문 PDF 가져오기" extra={<StatusBadge s="real">PDF 텍스트 추출</StatusBadge>}>
+      {tab === 'search' && (
+        <Card title="KCI 논문 검색" extra={<StatusBadge s="real">KCI Open API</StatusBadge>}>
+          <KciSearch />
+          <div className="notice">
+            <b>순서</b> ① 제목·키워드·초록·저자로 검색 → ② 가져올 논문 체크 → ③ 확인 창에서 서지사항·관련도 수정 → ④ 라이브러리 추가. 원문 파일은 가져오지 않으며, 원문은 KCI에서 받아 "논문 PDF"로 넣을 수 있습니다.
+          </div>
+        </Card>
+      )}
+
+      {tab === 'pdf' && (
+        <Card title="논문 PDF 가져오기" extra={<StatusBadge s="real">PDF 텍스트 추출</StatusBadge>}>
           <KciImport />
           <div className="notice">
             <b>순서</b> ① PDF 선택 → ② 제목·저자·학술지·권호·쪽·DOI·초록·주제어 자동 추출 → ③ <b>확인 창에서 가져올 논문을 직접 체크</b>하고 틀린 항목 수정 →

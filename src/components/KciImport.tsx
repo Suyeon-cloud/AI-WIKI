@@ -15,7 +15,8 @@ export interface PdfSource {
   file: Blob;
   name: string;
   size: number;
-  from: 'KCI PDF' | 'Google Drive';
+  from: 'PDF' | 'Google Drive' | 'KCI API';
+  url?: string;
 }
 
 export interface ReviewItem {
@@ -125,26 +126,25 @@ export function KciReview({ items, onClose, onDone }: { items: ReviewItem[]; onC
     if (!chosen.length) return toast('가져올 자료를 체크하세요.', 'info');
     const ms = chosen.map((r) => {
       const k = r.meta!;
+      const fromApi = r.src.from === 'KCI API'; // 원문 파일 없이 서지·초록만 가져온 자료
       return newMaterial({
         title: k.title,
-        sourceType: 'PDF',
+        sourceType: fromApi ? 'Web' : 'PDF',
         projectId: project?.id,
-        importedFrom: r.src.from === 'Google Drive' ? 'Google Drive' : 'KCI PDF',
+        importedFrom: fromApi ? 'KCI Open API' : r.src.from === 'Google Drive' ? 'Google Drive' : 'PDF',
         topic: k.journal ? `${k.journal}${k.year ? ` (${k.year})` : ''}` : '',
         keywords: k.keywords.slice(0, 10),
         abstract: [k.abstractKo, k.abstractEn].filter(Boolean).join('\n\n') || undefined,
         content: saveText ? r.text : undefined,
-        fileName: r.src.name,
-        fileSize: r.src.size,
-        mimeType: 'application/pdf',
-        url: k.doi ? `https://doi.org/${k.doi}` : undefined,
+        ...(fromApi ? {} : { fileName: r.src.name, fileSize: r.src.size, mimeType: 'application/pdf' }),
+        url: k.doi ? `https://doi.org/${k.doi}` : r.src.url || undefined,
         bib: kciToBib(k),
         citationIncluded: true,
         relevance: ai.rel[r.key]?.relevance ?? 3,
       });
     });
     dispatch({ type: 'addMany', materials: ms });
-    if (project) dispatch({ type: 'log', event: { projectId: project.id, kind: '자료', text: `PDF 논문 ${ms.length}건을 추가했습니다: ${ms.slice(0, 2).map((m) => m.title).join(', ')}${ms.length > 2 ? ' 외' : ''}` } });
+    if (project) dispatch({ type: 'log', event: { projectId: project.id, kind: '자료', text: `논문 ${ms.length}건을 추가했습니다: ${ms.slice(0, 2).map((m) => m.title).join(', ')}${ms.length > 2 ? ' 외' : ''}` } });
     toast(`${ms.length}건을 '${project?.name ?? '미분류'}' 라이브러리에 추가했습니다. 서지사항은 참고문헌 화면에서 다시 확인할 수 있습니다.`);
     onDone?.(ms);
     onClose();
@@ -201,7 +201,7 @@ export function KciReview({ items, onClose, onDone }: { items: ReviewItem[]; onC
                 )}
                 <span className="review-tags">
                   {r.meta && <RelevancePick value={3} choice={ai.rel[r.key]} onChange={(v) => ai.choose(r.key, v)} />}
-                  <span className="chip chip-muted">{r.src.name} · {formatSize(r.src.size)}</span>
+                  {r.src.from !== 'KCI API' && <span className="chip chip-muted">{r.src.name} · {formatSize(r.src.size)}</span>}
                   {r.meta?.doi && <span className="chip">DOI</span>}
                   {r.meta && <span className={r.meta.abstractKo || r.meta.abstractEn ? 'chip' : 'warn-tag'}>{r.meta.abstractKo || r.meta.abstractEn ? '초록 있음' : '초록 없음'}</span>}
                   {r.meta?.source === 'rule+ai' && <StatusBadge s="ai">AI 보완</StatusBadge>}
@@ -220,7 +220,7 @@ export function KciReview({ items, onClose, onDone }: { items: ReviewItem[]; onC
   );
 }
 
-/** 자료 수집 화면의 KCI 논문 PDF 카드 */
+/** 자료 수집 화면의 논문 PDF 카드 */
 export function KciImport() {
   const { state } = useStore();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -234,7 +234,7 @@ export function KciImport() {
     if (!pdfs.length) return;
     setProgress({ done: 0, total: pdfs.length, name: pdfs[0].name });
     const items = await extractPdfs(
-      pdfs.map((f) => ({ file: f, name: f.name, size: f.size, from: 'KCI PDF' as const })),
+      pdfs.map((f) => ({ file: f, name: f.name, size: f.size, from: 'PDF' as const })),
       { useAi: useAi && ai, existing: state.materials },
       (_it, i) => setProgress({ done: i + 1, total: pdfs.length, name: pdfs[i + 1]?.name ?? '' }),
     );
@@ -268,7 +268,7 @@ export function KciImport() {
         ) : (
           <>
             <div className="drop-icon">📄</div>
-            <b>KCI 논문 PDF를 끌어다 놓거나 클릭해서 선택</b>
+            <b>논문 PDF를 끌어다 놓거나 클릭해서 선택</b>
             <span className="muted small">여러 편을 한 번에 넣을 수 있습니다 · 제목·저자·학술지·권호·쪽·DOI·초록·주제어를 추출합니다</span>
           </>
         )}

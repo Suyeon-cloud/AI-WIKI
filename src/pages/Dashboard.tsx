@@ -182,7 +182,7 @@ export function Dashboard() {
         <div className="stat">
           <span>연구자료</span>
           <b>{ms.length}</b>
-          <small>KCI PDF {ms.filter((m) => m.importedFrom === 'KCI PDF').length}건</small>
+          <small>논문 PDF {ms.filter((m) => m.importedFrom === 'PDF' || m.importedFrom === 'KCI PDF').length}건 · KCI 검색 {ms.filter((m) => m.importedFrom === 'KCI Open API').length}건</small>
         </div>
         <div className="stat">
           <span>관련도 4~5등급</span>
@@ -247,7 +247,7 @@ export function Dashboard() {
         <Card title="최근 추가 자료" extra={<button className="btn btn-sm" onClick={() => nav.go('library')}>라이브러리 열기</button>}>
           {recent.length === 0 ? (
             <Empty>
-              자료가 없습니다. <button className="link" onClick={() => nav.go('collect')}>자료 수집</button>에서 KCI 논문 PDF를 추가하세요.
+              자료가 없습니다. <button className="link" onClick={() => nav.go('collect')}>자료 수집</button>에서 논문을 검색하거나 PDF를 추가하세요.
             </Empty>
           ) : (
             <table className="table">

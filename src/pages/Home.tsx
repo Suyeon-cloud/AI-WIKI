@@ -8,7 +8,7 @@ import { hasMyView } from '../types';
 function FlowDiagram({ go }: { go: (p: PageKey) => void }) {
   const steps: { no: string; title: string; sub: string; page: PageKey }[] = [
     { no: '①', title: '프로젝트', sub: '논문 주제 단위', page: 'dashboard' },
-    { no: '②', title: '자료 수집', sub: 'KCI PDF · Drive', page: 'collect' },
+    { no: '②', title: '자료 수집', sub: 'KCI 검색 · 논문 PDF', page: 'collect' },
     { no: '③', title: '자료 라이브러리', sub: '주제별 폴더', page: 'library' },
     { no: '④', title: 'AI 분석', sub: '전체 · 선택 논문', page: 'analysis' },
     { no: '⑤', title: '참고문헌', sub: '서지사항 목록', page: 'references' },
@@ -60,7 +60,7 @@ export function Home() {
     { done: c.obsidian, title: 'Obsidian Vault 폴더 연결', desc: '자료·AI 결과물을 Markdown 노트로 보관', action: '연결하기', run: () => nav.go('settings') },
     { done: c.drive, title: 'Google Drive 연결', desc: 'Drive의 PDF·노트를 골라 가져오고, AI 결과물 저장', action: '연결하기', run: () => nav.go('settings') },
     { done: !!project, title: '연구 프로젝트 만들기', desc: '논문 주제 = 라이브러리 폴더 = Obsidian/Drive 폴더', action: '만들기', run: nav.newProject },
-    { done: materials.length > 0, title: '자료 모으기', desc: 'KCI 논문 PDF를 끌어다 놓으면 초록·서지 자동 추출', action: '자료 수집', run: () => nav.go('collect') },
+    { done: materials.length > 0, title: '자료 모으기', desc: 'KCI에서 검색하거나 논문 PDF를 넣으면 초록·서지 자동 정리', action: '자료 수집', run: () => nav.go('collect') },
     { done: materials.some(hasMyView), title: '나의 관점 기록', desc: '자료마다 내 해석을 직접 적기 (AI가 대신 쓰지 않음)', action: '라이브러리', run: () => nav.go('library') },
     { done: outputs.some((o) => o.kind === '전체 분석'), title: 'AI 전체 분석', desc: '모은 자료 전체에서 쟁점·공백·인사이트 도출', action: 'AI 분석', run: () => nav.go('analysis') },
     { done: !!thesis?.chapters.some((ch) => ch.text.trim()), title: 'AI 집필 → HWPX', desc: '논문 유형·목차를 정하고 학위논문 또는 학술지논문 원고 생성', action: 'AI 집필', run: () => nav.go('writing') },
@@ -74,7 +74,7 @@ export function Home() {
           <div className="hero-kicker">논문 연구 워크스페이스</div>
           <h1>모은 자료에서 논문까지, 한 흐름으로</h1>
           <p>
-            KCI 논문 PDF를 넣으면 초록과 서지사항이 정리되고, Claude AI가 모은 자료 전체를 읽어 연구 공백과 인사이트를 짚어 줍니다. 마지막에는
+            KCI에서 논문을 검색하거나 논문 PDF를 넣으면 초록과 서지사항이 정리되고, Claude AI가 모은 자료 전체를 읽어 연구 공백과 인사이트를 짚어 줍니다. 마지막에는
             학위논문(한국외대 서식)이나 학술지 투고 원고를 HWPX로 만듭니다.
           </p>
           <div className="btn-group">
