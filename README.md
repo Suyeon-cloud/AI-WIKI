@@ -1,28 +1,206 @@
-# AI WIKI 배포 작업 상태
+# AI WIKI
 
-Google 로그인과 Supabase 계정별 저장을 연결한 작업 사본입니다. 실제 두 계정 전환과 백업 복원·새로고침 후 보존을 사용자와 확인했습니다. Vercel 배포는 아직 진행하지 않았습니다.
+석사논문과 연구자료를 **프로젝트(논문 주제) 단위**로 수집·분류·분석하고, 연구자의 관점과 논문 활용 정보를 기록하며, Claude AI를 이용한 **자료 분석과 논문 집필**까지 지원하는 연구관리 웹앱입니다. 마지막 단계에서 한국외국어대학교 학위논문 서식 또는 학술지 투고 형식의 **HWPX(한글) 원고**를 생성합니다.
 
-## 개인 Claude 키 사용
+**배포 주소:** https://ai-wiki-sigma.vercel.app/
 
-연구 설정에서 각자 본인의 Claude 키를 입력하고 **이 탭에서 사용**을 누릅니다. 키는 모듈 메모리에만 두며 새로고침, 페이지 이탈, 탭 닫기, 로그아웃, 계정 변경 시 다시 입력해야 합니다. 키 입력과 삭제는 AI 요청을 보내지 않으며 연결 확인은 짧은 유료 요청을 보냅니다. 요금은 입력한 키의 API 계정에 청구됩니다.
+React 18 + TypeScript + Vite 웹앱이며, Vercel 서버 함수와 Supabase(Google 로그인 · 계정별 저장)를 사용합니다.
 
-Claude 요청은 같은 출처의 `/api/claude` 서버를 거칩니다. 서버는 Supabase에서 Google 로그인 토큰과 확인된 이메일을 검증한 뒤 해당 요청의 키로 Claude를 호출합니다. 애플리케이션은 키를 Supabase·localStorage·sessionStorage·파일·로그에 기록하지 않습니다. 서버가 요청을 처리하는 동안 키를 취급하므로 운영자가 기술적으로 접근 불가능한 구조는 아닙니다. 배포 시 요청 본문이나 헤더를 수집하는 분석/디버그 도구를 추가하지 마세요. 로그인 세션과 연구자료 저장은 API 키 보관과 별개입니다.
+## 목차
 
-운영자의 `ANTHROPIC_API_KEY`나 `AI_ALLOWED_EMAILS`는 사용하지 않습니다. 교수님 이메일을 별도 서버 허용 목록에 등록할 필요가 없습니다. 다만 Google OAuth 앱이 테스트 상태라면 Google 측 테스트 사용자 설정은 별개로 적용됩니다.
+1. [주요 기능](#주요-기능)
+2. [AI 분석과 AI 집필의 차이](#ai-분석과-ai-집필의-차이)
+3. [전체 사용 흐름](#전체-사용-흐름)
+4. [설치 및 실행](#설치-및-실행)
+5. [외부 연동 및 설정](#외부-연동-및-설정)
+6. [Google Drive와 AI 결과물 관리](#google-drive와-ai-결과물-관리)
+7. [논문 집필 Skill](#논문-집필-skill)
+8. [데이터 및 보안](#데이터-및-보안)
+9. [프로젝트 구조](#프로젝트-구조)
 
-## KCI 논문 검색
+## 주요 기능
 
-자료 수집의 **KCI 검색**에서 제목·키워드·초록·저자로 논문을 찾고, 체크한 논문만 서지사항·초록과 함께 가져옵니다. 원문 파일은 가져오지 않습니다. KCI 응답에는 주제어가 없어 비워 둡니다. 각자 본인의 KCI 인증키를 KCI 검색 탭에 입력해 사용합니다. 키는 Claude 키와 같이 탭 메모리에만 두며 새로고침, 탭 닫기, 로그아웃, 계정 변경 시 지워집니다. 요청은 `/api/kci` 서버 함수를 거치며 로그인한 Google 계정만 호출할 수 있고, 운영자의 공용 키(`KCI_API_KEY`)는 사용하지 않습니다. 키가 없으면 KCI 사이트에서 찾은 논문을 **논문 PDF**로 넣을 수 있습니다.
+| 기능 | 화면 | 내용 |
+|---|---|---|
+| Google 로그인 · 계정별 저장 | 첫 화면 · 사이드바 | Google 계정으로 시작하면 계정이 만들어지고, 자료는 계정별로 저장되어 다른 기기에서도 이어서 사용 |
+| 프로젝트 생성 및 히스토리 | 대시보드 · 사이드바 | 논문 주제 단위로 프로젝트 생성·전환·정보 수정·삭제. 프로젝트 이력 표와 활동 기록 |
+| 연구자료 수집 · 라이브러리 | 자료 수집 · 자료 라이브러리 | 프로젝트별 폴더로 자료 관리, 검색·필터, 여러 자료 선택 후 폴더 이동·삭제·외부 저장소로 보내기 |
+| KCI 논문 검색 | 자료 수집 | 본인 KCI 인증키로 제목·키워드·초록·저자를 검색하고, 체크한 논문만 서지사항·초록과 함께 가져오기 |
+| 논문 PDF 가져오기 | 자료 수집 | PDF에서 제목·저자·학술지·권호·쪽·DOI·국문/영문 초록·주제어 추출 → 확인 창에서 직접 체크·수정한 논문만 추가 |
+| 웹 · YouTube · 파일 자료 | 자료 수집 | URL·YouTube 링크 등록, Markdown·TXT·AI WIKI JSON 파일 가져오기(추가/갱신/충돌/중복 미리보기) |
+| AI 관련도 제안 | 자료 수집 · 자료 라이브러리 | 프로젝트 주제 기준으로 AI가 관련도(1~5)를 제안하고, 연구자가 확인·수정한 뒤 적용 |
+| Google Drive 연동 | 자료 수집 · 라이브러리 · AI 분석/집필 | Drive의 기존 자료를 목록 창에서 체크해 가져오기, 자료 Markdown과 AI 결과물·HWPX를 프로젝트 폴더에 저장 |
+| Obsidian 연동 | 자료 수집 · 라이브러리 · 연구 설정 | 선택한 Vault 폴더의 노트를 골라 가져오기, 자료를 프로젝트 폴더의 Markdown 노트로 내보내기 |
+| AI 분석 | AI 분석 | 연구 주제·키워드를 기준으로 한 **전체 자료 분석**과 **선택 논문 심층 분석**, 분석 기록 보관 |
+| 나의 관점 · 연구 기록 | AI 분석 | 자료별 나의 관점, 내 연구와의 연결, 연구 메모, 논문 활용 위치를 연구자가 직접 기록 |
+| 참고문헌 · 서지정보 관리 | 참고문헌 | 자료 유형 7종별 서지정보 입력·검증, APA 7 · Chicago · MLA 9 · 국내 학술지 일반형 서식, TXT/HTML 내보내기 |
+| AI 논문 집필 | AI 집필 | **학위논문 / 학술지논문** 유형을 고르고 논문 정보·근거 자료·목차를 정해 장별 원고와 초록 작성. 유형별 원고는 따로 보관 |
+| HWPX 생성 | AI 집필 | 학위논문: 한국외대 서식의 표지·심사청구서·인정서·초록·목차·본문·참고문헌·ABSTRACT / 학술지논문: 제목·저자·초록·본문·참고문헌·영문 Abstract (A4) |
+| JSON 백업 · 복원 | 연구 설정 | 프로젝트·자료·AI 결과물·집필 원고 전체를 JSON 파일로 백업하고 전체 복원 또는 자료만 병합 |
 
-KCI 논문이 아닌 PDF도 자료 수집의 **논문 PDF**로 넣을 수 있습니다.
+## AI 분석과 AI 집필의 차이
 
-## 연결과 검증
+| | AI 분석 | AI 집필 |
+|---|---|---|
+| 목적 | 모은 자료를 AI가 어떻게 판단하는지 확인하고 **인사이트**를 얻음 | 학위논문 또는 학술지논문 구조에 맞는 **원고**를 작성 |
+| 입력 | 연구자가 정한 **분석 주제 + 키워드**(필수), 나의 관점, 질문 | **논문 유형**, 논문 정보(학위논문: 학과·지도교수 / 학술지논문: 투고 학술지·소속), **목차**, 근거 자료, (선택) AI 전체 분석 결과 |
+| 결과 | 전체 분석: 주제 흐름, 공통 발견, 쟁점, 연구 공백, 내 연구의 차별점, 제안 연구 문제, 자료별 역할, 추가 검색어<br>선택 논문 분석: 요약, 연구 방법, 주요 결과, 한계, 내 논문과의 접점, 활용 제안 | 장별 본문(절·항 구조), 연구자 확인 사항, 국문초록·ABSTRACT, HWPX 파일 |
 
-`.env.local`에는 `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`를 설정합니다. Google Drive를 사용하려면 `VITE_GOOGLE_CLIENT_ID`도 설정합니다. Google Client Secret은 Supabase Google Provider에만 등록합니다. 비밀값은 어떤 `VITE_` 변수에도 넣지 않습니다. `.env.local`은 Git에서 제외됩니다.
+AI 분석·집필 결과는 원본 연구자료와 섞이지 않도록 **AI 결과물 보관함**에 따로 저장됩니다.
 
-`supabase/migrations/202611010001_user_state.sql`을 새 프로젝트에 한 번 적용합니다. 계정당 JSON 문서 하나를 저장하며 RLS로 소유자만 CRUD할 수 있습니다. 버전 충돌 시 덮어쓰지 않고 중지합니다. 미저장 복구 사본은 계정별 브라우저 IndexedDB 키에 두며 API 키는 포함하지 않습니다.
+## 전체 사용 흐름
 
-검증 명령: `npm run build`, `npm run verify`, `npm run verify:cloud`, `npm run verify:server`. 서버 검사는 실제 Claude 비용 없이 인증·요청별 키 분리·오류 비밀값 제거·취소·메모리 키 수명을 확인합니다. 실제 개인 키로 연결 확인이 성공한 것을 사용자와 확인했습니다.
+```
+Google 로그인 → 프로젝트 생성 → 자료 수집/가져오기 → 라이브러리 정리 → AI 분석 → 참고문헌 정리 → AI 집필 → HWPX 출력 · Drive 저장
+```
 
-Vite 개발 서버와 Vercel 함수는 같은 서버 핸들러를 사용합니다. 모델은 Opus 5.5, 요청은 4MB 이하, 출력은 최대 32,000토큰이며 240초 후 중단합니다. 자동 재시도는 끕니다. 큰 PDF는 텍스트로 가져오거나 범위를 줄여 주세요.
+1. **프로젝트 생성:** Google 계정으로 로그인한 뒤 대시보드 또는 사이드바의 "새 프로젝트"에서 논문 주제·키워드와 논문 정보를 입력합니다. Obsidian·Drive가 연결돼 있으면 같은 이름의 프로젝트 폴더를 함께 만듭니다.
+2. **자료 수집/가져오기:** KCI 검색, 논문 PDF, 웹, YouTube, 파일로 새 자료를 모으고, Drive·Obsidian에 보관된 기존 자료는 "연동 저장소에서 가져오기"로 골라 가져옵니다.
+3. **라이브러리 정리:** 관련도·PARA 분류를 정하고, 자료마다 나의 관점을 기록합니다.
+4. **AI 분석:** 분석 주제와 키워드를 입력하고 전체 분석 또는 선택 논문 분석을 실행합니다.
+5. **참고문헌 정리:** 서지정보를 확인·보완합니다. 필수 항목이 모두 있는 자료만 참고문헌 목록과 HWPX에 들어갑니다.
+6. **AI 집필:** 학위논문 또는 학술지논문을 고르고, 목차를 정해 장별 원고를 작성·수정합니다.
+7. **HWPX 출력 · Drive 저장:** HWPX를 내려받거나 Drive의 프로젝트 `AI 생성` 폴더에 저장합니다.
 
+앱의 "시작하기" 화면에서도 같은 흐름도와 시작 체크리스트를 볼 수 있습니다.
+
+## 설치 및 실행
+
+배포 주소에서 바로 사용할 수 있습니다. 로컬에서 실행하려면 Node.js 24와 아래 Supabase 설정이 필요합니다.
+
+```bash
+npm install
+npm run dev
+```
+
+브라우저에서 `http://localhost:5173`으로 접속합니다. Obsidian 폴더 연동은 **Chrome 또는 Edge(데스크톱)**에서 사용하세요.
+
+| 명령 | 용도 |
+|---|---|
+| `npm run dev` | 개발 서버 실행 (포트 5173 고정, 서버 함수 포함) |
+| `npm run typecheck` | TypeScript 타입 검사 |
+| `npm run build` | 타입 검사 + 배포용 빌드(`dist/`) |
+| `npm run preview` | 빌드 결과 확인 (포트 4173) |
+| `npm run verify` | 데이터 보존·가져오기·참고문헌 서식 검사 |
+| `npm run verify:cloud` | 계정별 저장·접근 권한 검사 |
+| `npm run verify:server` | Claude·KCI 서버 함수의 인증·키 처리 검사 |
+| `npm run thesis:hwpx -- <원고.json> <출력.hwpx>` | 원고 JSON으로 HWPX 생성 (Skill용) |
+
+## 외부 연동 및 설정
+
+### Supabase (로그인 · 계정별 저장)
+
+1. Supabase 프로젝트를 만들고 `supabase/migrations/202611010001_user_state.sql`을 한 번 적용합니다.
+2. Authentication에서 Google Provider를 켭니다. Google Client Secret은 **Supabase 설정에만** 등록합니다.
+3. 배포 주소를 Supabase의 Site URL·Redirect URL에 등록합니다.
+4. `.env.example`을 참고해 `.env.local`(배포 시 Vercel 환경변수)에 `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`를 넣습니다.
+
+### Claude API (AI 분석 · AI 집필 · 관련도 제안 · PDF 서지 보완)
+
+- 각 사용자가 **연구 설정 → AI 설정**에 본인 Anthropic API key를 입력합니다. 요금은 입력한 키의 API 계정에 청구됩니다.
+- 사용 모델은 Claude Opus 5.5이며, 요청은 로그인 확인 후 서버 함수 `/api/claude`를 거칩니다.
+- 운영자의 공용 키(`ANTHROPIC_API_KEY`)는 사용하지 않습니다.
+
+### KCI Open API (논문 검색)
+
+- 각 사용자가 **자료 수집 → KCI 검색**에 본인 KCI 인증키를 입력합니다. 키는 [KCI](https://www.kci.go.kr/kciportal/po/openapi/openDataPackGuide.kci?datasetBean.dtstTyCd=00)에서 신청합니다.
+- 요청은 로그인 확인 후 서버 함수 `/api/kci`를 거칩니다. 운영자의 공용 키(`KCI_API_KEY`)는 사용하지 않습니다.
+- 원문 파일은 가져오지 않습니다. KCI 응답에 주제어가 없어 키워드는 비워 둡니다. 키가 없으면 KCI 사이트에서 찾은 논문을 **논문 PDF**로 넣을 수 있습니다.
+
+### Google Drive
+
+1. [Google Cloud Console](https://console.cloud.google.com)에서 **Google Drive API**를 사용 설정합니다.
+2. OAuth 동의 화면에 범위 `openid`, `email`, `profile`, `drive.file`, `drive.readonly`를 추가합니다.
+   - `drive.file`: 이 앱이 만든 폴더·파일 쓰기
+   - `drive.readonly`: Drive에 직접 올려 둔 자료를 목록에서 골라 가져오기(읽기 전용)
+3. OAuth 클라이언트 ID(웹 애플리케이션)의 승인된 JavaScript 원본에 `http://localhost:5173`과 배포 주소를 등록하고, `VITE_GOOGLE_CLIENT_ID`에 넣습니다.
+4. 앱의 **연구 설정 → Google Drive**에서 연결합니다.
+
+Google 앱이 테스트 상태이면 **테스트 사용자로 등록한 계정만** 로그인할 수 있으며, 로그인 때 "확인되지 않은 앱" 경고가 나올 수 있습니다.
+
+### Obsidian
+
+- 연구 설정에서 **사용자가 직접 선택한 로컬 Vault 폴더**에 연결합니다(브라우저 File System Access API). 앱은 선택한 폴더 안에서만 읽고 씁니다.
+- 별도 플러그인이 필요 없으며, 버튼을 누를 때만 저장·불러오기를 합니다(자동 동기화 없음).
+- 저장 위치: `<Vault>/<기본 폴더, 기본값 AI WIKI>/<프로젝트>/자료`, `.../<프로젝트>/AI 생성`
+- 가져오기는 Vault 전체(또는 현재 프로젝트 폴더)의 노트 목록에서 선택한 노트만 현재 프로젝트로 가져옵니다.
+- Obsidian에서 수정된 노트와 AI WIKI가 만들지 않은 같은 이름의 노트는 덮어쓰지 않으며, Vault 파일을 삭제하지 않습니다.
+
+## Google Drive와 AI 결과물 관리
+
+Google Drive와 Obsidian은 새 자료를 찾아 주는 **수집원이 아니라**, 연구자가 이미 확보해 정리해 둔 자료를 보관하는 **연동 저장소**입니다.
+
+- **가져오기:** 자료 수집 화면의 "연동 저장소에서 가져오기"에서 Drive 목록 창(폴더 이동·검색 가능)을 열고, 체크한 파일만 현재 프로젝트로 가져옵니다. PDF는 서지·초록을 추출해 한 번 더 확인한 뒤 추가합니다.
+- **저장:** 원본 자료와 AI 결과물을 프로젝트별로 나누어 저장합니다.
+
+```
+내 Drive/AI WIKI/
+├─ <프로젝트>/
+│  ├─ 자료/      ← 라이브러리에서 보낸 원본 자료 Markdown
+│  └─ AI 생성/   ← AI 분석 결과, 집필 초안 Markdown, 논문 HWPX
+└─ ai-wiki-backup-*.json   ← 전체 백업
+```
+
+- AI 결과물은 앱 안에서도 라이브러리(원본 자료)와 분리된 **AI 결과물 보관함**에 저장되며, 보관함에서 Drive·Obsidian의 `AI 생성` 폴더로 저장하거나 Markdown으로 내려받을 수 있습니다.
+- 앱에서 프로젝트를 삭제해도 Drive·Obsidian의 실제 파일과 폴더는 삭제되지 않습니다.
+
+## 논문 집필 Skill
+
+AI 집필 화면은 고른 논문 유형의 `SKILL.md`를 Claude의 시스템 지침으로 그대로 사용합니다. Claude Code에서도 같은 Skill로 사용할 수 있습니다.
+
+| 경로 | 역할 |
+|---|---|
+| `.claude/skills/hufs-thesis-writing/` | 한국외국어대학교 대학원 학위논문 작성 서식(서식 1~12) 기반: 집필 원칙, 구성·번호 체계·지면 규격, 참고문헌 형식, 서식 텍스트, 원고 JSON 예시 |
+| `.claude/skills/journal-article-writing/` | 일반적인 국내 학술지 투고 원고 기준. 투고 전에 해당 학술지 규정에 맞게 조정 필요 |
+
+- HWPX 생성(`src/lib/hwpx.ts`)은 한컴오피스 한글이 만든 빈 HWPX 골격 위에 글자·문단 모양과 본문을 얹는 방식입니다. 학위논문 지면은 19 × 26 cm, 학술지 원고는 A4입니다.
+- HWPX 골격은 [python-hwpx](https://pypi.org/project/python-hwpx/)(Apache License 2.0)의 Skeleton.hwpx에서 가져왔습니다.
+- 제출 전에는 생성된 파일을 한글에서 열어 목차 쪽수, 표지 줄 간격 등을 최종 확인해야 합니다.
+
+## 데이터 및 보안
+
+| 데이터 | 저장 위치 | 비고 |
+|---|---|---|
+| 프로젝트 · 자료 · AI 결과물 · 집필 원고 · 활동 기록 | **Supabase** (`ai_wiki_user_state`) | 계정당 문서 하나. RLS로 본인만 읽고 쓸 수 있음. 저장 전 복구 사본은 계정별 브라우저 IndexedDB에 보관 |
+| Claude API key · KCI 인증키 | 현재 탭의 **메모리** | 새로고침·탭 닫기·로그아웃·계정 변경 시 지워져 다시 입력해야 함. Supabase·브라우저 저장소·백업 파일에 저장하지 않음 |
+| Google Drive access token | 메모리 + 현재 탭의 **sessionStorage** | 같은 탭 새로고침 시 만료(약 1시간) 전까지 복원, 연결 해제·인증 실패·만료·탭 종료 시 제거 |
+| Obsidian Vault 폴더 연결 | 브라우저 **IndexedDB** | 폴더 접근 권한 정보만 보관 |
+
+- Claude·KCI 키는 요청을 처리하는 동안 앱 서버를 거칩니다. 앱은 키를 저장하거나 로그에 기록하지 않지만, 운영자가 기술적으로 접근할 수 없는 구조는 아닙니다. 요청 내용을 수집하는 분석·디버그 도구를 서버 함수에 추가하지 마세요.
+- PDF는 브라우저 안에서 읽으며 원본 파일은 업로드하지 않습니다. 자료에 저장한 본문 텍스트는 계정 저장소에 함께 저장됩니다. AI 서지 보완을 켜면 PDF 앞 4쪽의 텍스트가 Claude API로 전송됩니다.
+- 중요한 작업 후에는 **연구 설정 → 전체 백업 받기**로 백업하세요. 백업 파일에는 연구 자료가 들어 있으므로 공개 저장소에 올리지 마세요.
+- **API key, access token, client secret, service_role 키는 저장소와 `VITE_` 환경변수에 넣지 마세요.** `VITE_` 값은 공개 화면 코드에 포함됩니다. `.env`, `.env.local`, `dist/`는 `.gitignore`에 등록되어 있습니다.
+
+## 프로젝트 구조
+
+```
+src/
+  App.tsx, main.tsx, store.tsx, types.ts, styles.css
+  pages/
+    Home.tsx         시작하기 (사용법 · 동작 흐름도 · 체크리스트)
+    Dashboard.tsx    프로젝트 이력 · 활동 기록 · 현황
+    Collect.tsx      자료 수집 (KCI 검색 · 논문 PDF · 웹 · YouTube · 파일) · 연동 저장소에서 가져오기
+    Library.tsx      프로젝트별 폴더 · 자료 상세 · 보내기 · AI 관련도 다시 판단
+    Analysis.tsx     AI 전체 분석 · 선택 논문 분석 · 나의 관점
+    References.tsx   서지정보 입력 · 참고문헌 서식
+    Writing.tsx      AI 집필 · HWPX 출력
+    Settings.tsx     AI · Obsidian · Drive 연결, 백업 · 복원
+  components/        로그인 화면, 사이드바, 공통 UI, 프로젝트 창, KCI 검색, PDF·Drive 가져오기, Obsidian·Drive 카드, AI 결과물 목록
+  lib/
+    supabase.ts, auth.ts                Supabase 연결 · Google 로그인
+    cloud-state.ts, cloud-repository.ts 계정별 저장
+    session-key.ts                      탭 메모리 키 보관
+    ai.ts, prompts.ts, relevance.ts     Claude 호출 · 요청 내용 · 관련도 제안
+    kci-search.ts                       KCI 검색
+    pdf.ts, kci.ts                      PDF 텍스트 · 서지/초록 추출
+    hwpx.ts                             학위논문 · 학술지논문 HWPX 생성
+    drive.ts, obsidian.ts, sync.ts      Drive · Obsidian 연동 · 프로젝트 폴더
+    projects.ts, data.ts, persist.ts, idb-store.ts   데이터 정규화 · 복구 사본
+    citation.ts                         참고문헌 서식
+api/                 Vercel 서버 함수 진입점 (claude, kci)
+server/              서버 함수 구현 (로그인 확인, Claude, KCI)
+supabase/migrations/ 계정별 저장 테이블과 접근 규칙
+.claude/skills/      논문 집필 Skill
+scripts/             원고 JSON → HWPX 변환
+tests/               검사 스크립트
+```
