@@ -1,15 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { signIn } from '../lib/auth';
-import { preloadGoogle } from '../lib/drive';
 
 /** 앱에 처음 들어올 때 보이는 Google 로그인 화면 */
-export function LoginScreen() {
+export function LoginScreen({ errorMessage }: { errorMessage?: string | null }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void preloadGoogle();
-  }, []);
 
   async function login() {
     setBusy(true);
@@ -39,8 +35,8 @@ export function LoginScreen() {
           </svg>
           {busy ? '로그인 중…' : 'Google 계정으로 시작하기'}
         </button>
-        {error && <p className="login-error" role="alert">{error}</p>}
-        <p className="login-note">처음이면 이 로그인으로 가입이 함께 완료되고, Google Drive도 바로 연결됩니다. 팝업에서 Drive 권한을 허용해 주세요.</p>
+        {(error || errorMessage) && <p className="login-error" role="alert">{error || errorMessage}</p>}
+        <p className="login-note">처음 로그인하면 계정이 만들어집니다. 자료는 로그인한 계정별로 저장되며, Google Drive는 연구 설정에서 별도로 연결할 수 있습니다.</p>
       </div>
     </div>
   );

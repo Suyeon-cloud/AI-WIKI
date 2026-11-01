@@ -56,3 +56,31 @@ export async function idbSave(state: AppState): Promise<IdbSaveResult> {
 
 /** 손상된 원본을 지우지 않고 별도 키에 보관 */
 export const idbKeepCopy = (raw: string, now = Date.now()) => run('readwrite', (s) => s.put(raw, `${STORAGE_KEY}:corrupt-${now}`)).catch(() => undefined);
+
+// Account-scoped recovery copies never replace the original local dataset.
+export interface RecoveryCopy { key: string; version: number; state: AppState; savedAt: string }
+export const recoveryKey = (userId: string, instanceId: string) => `ai-wiki:cloud-draft:${userId}:${instanceId}`;
+export async function saveRecovery(copy: RecoveryCopy): Promise<void> {
+  await run('readwrite', (s) => s.put(copy, copy.key));
+}
+export async function loadRecovery(userId: string): Promise<RecoveryCopy[]> {
+  const prefix = `ai-wiki:cloud-draft:${userId}:`;
+  const keys = await run<IDBValidKey[]>('readonly', (s) => s.getAllKeys());
+  const copies = await Promise.all(keys.filter((k) => typeof k === 'string' && k.startsWith(prefix))
+    .map((key) => run<RecoveryCopy>('readonly', (s) => s.get(key))));
+  return copies.filter((copy) => copy?.state).sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+}
+export async function clearRecovery(key: string, version: number): Promise<void> {
+  const db = await open();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      const store = tx.objectStore(STORE);
+      const req = store.get(key);
+      req.onsuccess = () => { if (req.result?.version === version) store.delete(key); };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally { db.close(); }
+}

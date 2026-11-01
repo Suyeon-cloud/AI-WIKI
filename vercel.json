@@ -1,0 +1,1 @@
+{"functions":{"api/claude.mjs":{"maxDuration":300}},"framework":"vite","buildCommand":"npm run build","outputDirectory":"dist"}

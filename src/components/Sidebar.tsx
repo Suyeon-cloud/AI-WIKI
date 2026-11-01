@@ -30,7 +30,7 @@ export function useConnections() {
 }
 
 export function Sidebar({ page, onNavigate }: { page: PageKey; onNavigate: (p: PageKey) => void }) {
-  const { state, dispatch } = useStore();
+  const { state, dispatch, pendingSave, toast } = useStore();
   const { project, materials } = useProject();
   const nav = useNav();
   const c = useConnections();
@@ -93,11 +93,14 @@ export function Sidebar({ page, onNavigate }: { page: PageKey; onNavigate: (p: P
               <b>{user.name}</b>
               <span>{user.email}</span>
             </div>
-            <button className="link small" onClick={signOut}>로그아웃</button>
+            <button className="link small" onClick={() => {
+              if (pendingSave) { toast('저장이 끝난 뒤 로그아웃해 주세요. 저장 오류가 있다면 먼저 전체 백업을 받아 주세요.', 'error'); return; }
+              void signOut().catch((e) => toast(e instanceof Error ? e.message : '로그아웃 오류', 'error'));
+            }}>로그아웃</button>
           </div>
         )}
         <div className="conn-list">
-          <button className={`conn ${c.ai ? 'on' : ''}`} onClick={() => onNavigate('settings')} title="Claude API 키 설정">
+          <button className={`conn ${c.ai ? 'on' : ''}`} onClick={() => onNavigate('settings')} title="Claude 서버 연결 설정">
             <i /> Claude AI {c.ai ? '연결됨' : '설정 필요'}
           </button>
           <button className={`conn ${c.obsidian ? 'on' : ''}`} onClick={() => onNavigate('settings')} title="Obsidian Vault 폴더">
@@ -107,7 +110,7 @@ export function Sidebar({ page, onNavigate }: { page: PageKey; onNavigate: (p: P
             <i /> Google Drive {c.drive ? '연결됨' : '미연결'}
           </button>
         </div>
-        <p>자료는 이 브라우저(IndexedDB)에 저장됩니다. 연구 설정에서 정기적으로 백업하세요.</p>
+        <p>자료는 로그인한 계정의 Supabase에 저장됩니다. 연구 설정에서 정기적으로 백업하세요.</p>
       </div>
     </aside>
   );

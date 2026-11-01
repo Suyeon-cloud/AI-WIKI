@@ -1,0 +1,91 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { PGlite } from '@electric-sql/pglite';
+import { CloudState } from '../node_modules/.cache/ai-wiki-verify/cloud-state.mjs';
+
+const db = new PGlite();
+const a = '11111111-1111-4111-8111-111111111111';
+const b = '22222222-2222-4222-8222-222222222222';
+await db.exec(`create role anon; create role authenticated;
+create schema auth; create table auth.users(id uuid primary key);
+create function auth.uid() returns uuid language sql stable as
+$$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
+grant usage on schema auth to authenticated;
+grant execute on function auth.uid() to authenticated;
+insert into auth.users values ('${a}'), ('${b}');`);
+await db.exec(await readFile(new URL('../supabase/migrations/202611010001_user_state.sql', import.meta.url), 'utf8'));
+const as = async (id) => {
+  await db.exec('reset role');
+  await db.query("select set_config('request.jwt.claim.sub', $1, false)", [id ?? '']);
+  await db.exec(`set role ${id ? 'authenticated' : 'anon'}`);
+};
+await as(null);
+await assert.rejects(db.query('select * from public.ai_wiki_user_state'));
+await assert.rejects(db.query("insert into public.ai_wiki_user_state(user_id,state) values ($1,'{}')", [a]));
+console.log('PASS: anonymous reads and inserts denied');
+await as(a);
+await db.query("insert into public.ai_wiki_user_state(user_id,state) values ($1,'{}')", [a]);
+await assert.rejects(db.query("insert into public.ai_wiki_user_state(user_id,state) values ($1,'{}')", [b]));
+await as(b);
+assert.equal((await db.query('select * from public.ai_wiki_user_state')).rows.length, 0);
+assert.equal((await db.query('update public.ai_wiki_user_state set revision=2 where user_id=$1 returning *', [a])).rows.length, 0);
+assert.equal((await db.query('delete from public.ai_wiki_user_state where user_id=$1 returning *', [a])).rows.length, 0);
+console.log('PASS: account B cannot read, update or delete account A; ownership forgery denied');
+await as(a);
+await assert.rejects(db.query('update public.ai_wiki_user_state set user_id=$1 where user_id=$2', [b,a]));
+assert.equal((await db.query('update public.ai_wiki_user_state set revision=2 where user_id=$1 and revision=1 returning *', [a])).rows.length, 1);
+assert.equal((await db.query('update public.ai_wiki_user_state set revision=2 where user_id=$1 and revision=1 returning *', [a])).rows.length, 0);
+await db.query('delete from public.ai_wiki_user_state where user_id=$1', [a]);
+console.log('PASS: owner CRUD allowed, ownership changes denied, stale revisions do not overwrite');
+await db.close();
+
+const empty = { schemaVersion:3, materials:[], projects:[], events:[], aiOutputs:[], theses:[] };
+let owner = a;
+let row = null;
+let writes = 0;
+const repo = {
+  async read(id) { assert.equal(id, a); return row; },
+  async write(id, state, rev) {
+    writes++;
+    assert.equal(id, a);
+    if ((row?.revision ?? null) !== rev) throw new Error('conflict');
+    row = { state, revision: (rev ?? 0) + 1 };
+    return row.revision;
+  },
+};
+const one = new CloudState(repo, a, () => owner === a);
+await assert.rejects(one.save(empty));
+assert.equal(writes, 0);
+assert.equal(await one.load(), null);
+assert.equal(writes, 0);
+await one.save(empty);
+assert.equal(row.revision, 1);
+const two = new CloudState(repo, a, () => owner === a);
+await two.load();
+await one.save(empty);
+await assert.rejects(two.save(empty), /conflict/);
+assert.equal(row.revision, 2);
+owner = b;
+const count = writes;
+await assert.rejects(one.save(empty), /계정/);
+assert.equal(writes, count);
+console.log('PASS: no save before load, no automatic upload, sequential revisions, stale-tab and account-switch guards');
+owner = a;
+const failedLoad = new CloudState({ ...repo, async read() { throw new Error('offline'); } }, a, () => true);
+await assert.rejects(failedLoad.load());
+await assert.rejects(failedLoad.save(empty));
+row = { state: { schemaVersion:999, materials:[] }, revision:1 };
+const future = new CloudState(repo,a,()=>true);
+await assert.rejects(future.load());
+await assert.rejects(future.save(empty));
+row = { state: { ...empty, materials:[null] }, revision:1 };
+const damaged = new CloudState(repo,a,()=>true);
+await assert.rejects(damaged.load());
+await assert.rejects(damaged.save(empty));
+let resolveRead;
+const slow = new CloudState({ ...repo, read() { return new Promise((resolve) => { resolveRead = resolve; }); } }, a, () => owner === a);
+const loading = slow.load();
+owner = b;
+resolveRead(null);
+await assert.rejects(loading);
+console.log('PASS: offline/corrupt/future-version loads fail closed; late responses after account changes rejected');

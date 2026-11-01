@@ -1,73 +1,56 @@
-/**
- * Google 로그인 (브라우저 전용, Client Secret 없음)
- * - Google Drive 연결과 같은 팝업·토큰을 써서, 로그인 한 번으로 가입과 Drive 연결을 함께 끝낸다.
- * - 이 브라우저에는 프로필(이름·이메일·사진)만 남겨 로그인 상태를 표시한다. 접근 토큰은 drive.ts가 관리한다.
- * - 서버가 토큰을 검증하지 않는 화면 안내용 로그인이다. 자료는 계정별로 나뉘지 않고 이 브라우저에 저장된다.
- */
-import { DriveError, connectDrive, currentAccessToken, disconnectDrive, driveConfigured } from './drive';
+import type { User } from '@supabase/supabase-js';
+import { supabase } from './supabase';
+import { disconnectDrive } from './drive';
+import { setVault } from './obsidian';
 
-export interface AuthUser {
-  id: string;
-  name: string;
-  email: string;
-  picture?: string;
-}
-
-const KEY = 'ai-wiki:auth-user';
-const USERINFO = 'https://www.googleapis.com/oauth2/v3/userinfo';
-
-function readUser(): AuthUser | null {
-  try {
-    const u = JSON.parse(localStorage.getItem(KEY) ?? 'null') as AuthUser | null;
-    return u && typeof u.id === 'string' && typeof u.email === 'string' ? u : null;
-  } catch {
-    return null;
-  }
-}
-
-let user = readUser();
+export interface AuthUser { id: string; name: string; email: string; picture?: string }
+let snapshot: { ready: boolean; user: AuthUser | null; error: string | null } = { ready: false, user: null, error: null };
 const listeners = new Set<() => void>();
-export const authUser = () => user;
-export const loginRequired = () => driveConfigured();
-export function subscribeAuth(l: () => void) {
-  listeners.add(l);
-  return () => {
-    listeners.delete(l);
-  };
-}
-function setUser(u: AuthUser | null) {
-  user = u;
-  try {
-    if (u) localStorage.setItem(KEY, JSON.stringify(u));
-    else localStorage.removeItem(KEY);
-  } catch {
-    /* 저장 불가 환경에서는 이번 세션만 로그인 */
+export const authState = () => snapshot;
+export const authUser = () => snapshot.user;
+export function subscribeAuth(l: () => void) { listeners.add(l); return () => { listeners.delete(l); }; }
+function publish(user: User | null, error: string | null = null) {
+  const next = user?.email ? { id: user.id, email: user.email, name: user.user_metadata.full_name || user.email, picture: user.user_metadata.avatar_url } : null;
+  if (snapshot.user?.id !== next?.id) {
+    disconnectDrive();
+    setVault(null, false);
   }
+  snapshot = { ready: true, user: next, error };
   listeners.forEach((l) => l());
 }
 
-/** Google 로그인 — 반드시 버튼 클릭에서 호출 (팝업 차단 방지) */
-export async function signIn(): Promise<AuthUser> {
-  await connectDrive('select_account');
-  const token = currentAccessToken();
-  if (!token) throw new DriveError('Google 로그인에 실패했습니다. 다시 시도하세요.', 'auth');
-  let res: Response;
+let started = false;
+export async function initializeAuth() {
+  if (started) return;
+  started = true;
+  if (!supabase) { publish(null, 'Supabase 연결 설정이 필요합니다.'); return; }
+  let generation = 0;
+  supabase.auth.onAuthStateChange((event, session) => {
+    // Supabase holds its auth lock here; do not await another auth call.
+    if (event === 'INITIAL_SESSION') return;
+    generation++;
+    publish(session?.user ?? null);
+  });
+  const current = generation;
   try {
-    res = await fetch(USERINFO, { headers: { Authorization: `Bearer ${token}` } });
-  } catch {
-    throw new DriveError('Google에 연결할 수 없습니다. 인터넷 연결을 확인하세요.', 'network');
-  }
-  if (!res.ok) throw new DriveError('Google 계정 정보를 읽지 못했습니다. 다시 시도하세요.', 'auth');
-  const info = (await res.json()) as { sub?: string; name?: string; email?: string; email_verified?: boolean; picture?: string };
-  if (!info.sub || !info.email) throw new DriveError('Google 계정 정보를 읽지 못했습니다. 다시 시도하세요.', 'auth');
-  if (info.email_verified === false) throw new DriveError('이메일이 확인된 Google 계정으로만 로그인할 수 있습니다.', 'denied');
-  const u: AuthUser = { id: info.sub, name: info.name || info.email, email: info.email, picture: info.picture };
-  setUser(u);
-  return u;
+    const { data: { session } } = await supabase.auth.getSession();
+    if (current !== generation) return;
+    if (!session) { publish(null); return; }
+    const { data, error } = await supabase.auth.getUser();
+    if (current === generation) publish(error ? null : data.user, error ? '로그인을 다시 확인해 주세요.' : null);
+  } catch { if (current === generation) publish(null, '로그인 정보를 확인하지 못했습니다. 새로고침해 주세요.'); }
 }
-
-/** 로그아웃 — Drive 연결도 함께 해제한다. 이 브라우저의 자료와 Drive 파일은 지우지 않는다. */
-export function signOut() {
-  disconnectDrive();
-  setUser(null);
+export async function signIn(): Promise<void> {
+  if (!supabase) throw new Error('Supabase 연결 설정이 필요합니다.');
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: `${window.location.origin}/`, queryParams: { prompt: 'select_account' } },
+  });
+  if (error) throw new Error('Google 로그인을 시작하지 못했습니다. 연결 설정을 확인해 주세요.');
+}
+export async function signOut(): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.auth.signOut({ scope: 'local' });
+  if (error) throw new Error('로그아웃하지 못했습니다. 다시 시도해 주세요.');
+  publish(null);
 }

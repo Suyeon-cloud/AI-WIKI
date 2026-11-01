@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { authUser, loginRequired, subscribeAuth } from './lib/auth';
+import { authState, initializeAuth, subscribeAuth } from './lib/auth';
+import { StoreProvider } from './store';
+import { refreshAi } from './lib/ai';
 import { LoginScreen } from './components/LoginScreen';
 import type { PageKey, Project } from './types';
 import { NAV, Sidebar } from './components/Sidebar';
@@ -20,9 +22,17 @@ const fromHash = (): PageKey => {
 };
 
 export default function App() {
+  const auth = useSyncExternalStore(subscribeAuth, authState);
+  useEffect(() => { void initializeAuth(); }, []);
+  if (!auth.ready) return <div className="boot-loading">로그인 확인 중…</div>;
+  if (!auth.user) return <LoginScreen errorMessage={auth.error} />;
+  return <StoreProvider key={auth.user.id} userId={auth.user.id}><Workspace /></StoreProvider>;
+}
+
+function Workspace() {
+  useEffect(() => { void refreshAi(); }, []);
   const [page, setPage] = useState<PageKey>(fromHash);
   const [dialog, setDialog] = useState<{ edit?: Project } | null>(null);
-  const user = useSyncExternalStore(subscribeAuth, authUser);
 
   useEffect(() => {
     const onHash = () => setPage(fromHash());
@@ -41,7 +51,6 @@ export default function App() {
     [go],
   );
 
-  if (loginRequired() && !user) return <LoginScreen />;
 
   return (
     <NavContext.Provider value={nav}>

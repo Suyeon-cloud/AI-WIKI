@@ -35,8 +35,13 @@ function ok(cond: unknown, msg: string, detail?: unknown) {
   }
 }
 function eq(actual: unknown, expected: unknown, msg: string) {
-  const a = JSON.stringify(actual);
-  const e = JSON.stringify(expected);
+  // JSON object member order is not data; array order remains significant.
+  const canonical = (value: unknown): string => JSON.stringify(value, (_key, item: unknown) =>
+    item && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)))
+      : item);
+  const a = canonical(actual);
+  const e = canonical(expected);
   ok(a === e, msg, a === e ? undefined : `expected ${e}\n         actual   ${a}`);
 }
 const section = (t: string) => console.log(`\n■ ${t}`);

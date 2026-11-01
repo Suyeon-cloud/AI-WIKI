@@ -12,11 +12,16 @@ import {
 } from './types';
 import { DEFAULT_SETTINGS, DEFAULT_WRITING } from './data/sample';
 import { uid } from './lib/utils';
-import { deriveViewStatus, parseFullState } from './lib/data';
-import { idbAvailable, idbKeepCopy, idbLoadRaw, idbSave } from './lib/idb-store';
+import { deriveViewStatus } from './lib/data';
+import { CloudState } from './lib/cloud-state';
+import { cloudRepository } from './lib/cloud-repository';
+import { authUser, signOut } from './lib/auth';
+import { buildBackup } from './lib/data';
+import { downloadFile } from './lib/utils';
+import { saveRecovery, clearRecovery, loadRecovery, recoveryKey, type RecoveryCopy } from './lib/idb-store';
 import { emptyThesis } from './lib/projects';
 import { bibStatusOf } from './lib/citation';
-import { browserStorage, loadState, saveState } from './lib/persist';
+
 
 type Action =
   | { type: 'add'; material: Material }
@@ -175,6 +180,7 @@ interface Ctx {
   toasts: Toast[];
   /** 마지막 브라우저 저장(IndexedDB 또는 localStorage) 실패 사유 (정상 저장 시 null) */
   storageError: string | null;
+  pendingSave: boolean;
   /** 손상된 저장 데이터를 보호하기 위해 자동 저장이 중지된 상태 */
   saveBlocked: boolean;
   /** 사용자가 현재 상태로 저장을 재개 (읽지 못한 원본을 덮어씀) */
@@ -183,85 +189,101 @@ interface Ctx {
 
 const StoreContext = createContext<Ctx | null>(null);
 
-export function StoreProvider({ children }: { children: ReactNode }) {
-  const [boot] = useState(() => loadState(browserStorage(), initial));
-  const [state, rawDispatch] = useReducer(reducer, boot.state);
+export function StoreProvider({ children, userId }: { children: ReactNode; userId: string }) {
+  const [loaded, setLoaded] = useState<{ engine: CloudState; state: AppState } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [recovery, setRecovery] = useState<RecoveryCopy[]>([]);
+  const [continueAfterRecovery, setContinueAfterRecovery] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setLoaded(null);
+    setError(null);
+    const engine = new CloudState(cloudRepository, userId, () => alive && authUser()?.id === userId);
+    void Promise.all([engine.load(), loadRecovery(userId).catch(() => [])]).then(([state, copies]) => {
+      if (alive) { setRecovery(copies); setLoaded({ engine, state: state ?? initial() }); }
+    }).catch((e) => { if (alive) setError(e instanceof Error ? e.message : '자료를 불러오지 못했습니다.'); });
+    return () => { alive = false; };
+  }, [userId, attempt]);
+  if (error) return <div className="login-screen"><div className="login-card">
+    <h1>자료를 불러오지 못했어요</h1><p role="alert">{error}</p>
+    <p>서버 원본은 변경하지 않았습니다.</p>
+    <button className="btn" onClick={() => setAttempt((x) => x + 1)}>다시 불러오기</button>
+    <button className="btn" onClick={() => { void signOut().catch(() => setError('로그아웃하지 못했습니다. 다시 시도해 주세요.')); }}>로그아웃</button>
+  </div></div>;
+  if (!loaded) return <div className="boot-loading">내 계정의 자료를 불러오는 중…</div>;
+  if (recovery.length && !continueAfterRecovery) return <div className="login-screen"><div className="login-card">
+    <h1>저장되지 않은 내용이 있어요</h1><p>이 계정으로 작업하다 서버에 저장하지 못한 사본입니다. 먼저 다운로드해 보관해 주세요. 사본은 자동으로 서버에 올리지 않습니다.</p>
+    {recovery.map((copy, i) => <p key={copy.key}><button className="btn" onClick={() => downloadFile(`ai-wiki-recovery-${i + 1}.json`, JSON.stringify(buildBackup(copy.state), null, 2), 'application/json')}>{copy.savedAt} 사본 다운로드</button></p>)}
+    <button className="btn btn-primary" onClick={() => setContinueAfterRecovery(true)}>서버 자료로 계속하기</button>
+  </div></div>;
+  return <CloudStore engine={loaded.engine} boot={loaded.state}>{children}</CloudStore>;
+}
+
+function CloudStore({ children, engine, boot }: { children: ReactNode; engine: CloudState; boot: AppState }) {
+  const [state, rawDispatch] = useReducer(reducer, boot);
+  const [edits, setEdits] = useState(0);
+  const [saved, setSaved] = useState(0);
+  const [retry, setRetry] = useState(0);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [storageError, setStorageError] = useState<string | null>(null);
-  const [saveBlocked, setSaveBlocked] = useState(boot.blockSave);
-  const errRef = useRef<string | null>(null);
-  const noticed = useRef(false);
-
+  const failed = useRef(false);
+  const mounted = useRef(false);
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const [draftKey] = useState(() => recoveryKey(authUser()!.id, uid()));
+  const draftQueue = useRef<Promise<void>>(Promise.resolve());
+  useEffect(() => {
+    if (!edits) return;
+    draftQueue.current = draftQueue.current.catch(() => undefined).then(() => saveRecovery({ key: draftKey, state, version: edits, savedAt: new Date().toISOString() }));
+    void draftQueue.current.catch(() => undefined);
+  }, [state, edits, draftKey]);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const toast = useCallback((text: string, kind: Toast['kind'] = 'success') => {
     const id = uid();
     setToasts((t) => [...t, { id, kind, text }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' ? 6000 : 3200);
+    setTimeout(() => { if (mounted.current) setToasts((t) => t.filter((x) => x.id !== id)); }, kind === 'error' ? 6000 : 3200);
   }, []);
-
-  // 백업 복원·초기화는 저장 데이터를 새로 정하는 동작이므로 자동 저장 중지를 해제한다.
   const dispatch = useCallback((a: Action) => {
-    if (a.type === 'restore' || a.type === 'reset') setSaveBlocked(false);
     rawDispatch(a);
+    setEdits((x) => x + 1);
   }, []);
-  const resumeSave = useCallback(() => setSaveBlocked(false), []);
-
+  const resumeSave = useCallback(() => {
+    failed.current = false;
+    setStorageError(null);
+    setRetry((x) => x + 1);
+  }, []);
+  const pendingSave = edits > saved;
   useEffect(() => {
-    if (noticed.current) return;
-    noticed.current = true;
-    boot.notices.forEach((n) => toast(n.text, n.kind));
-  }, [boot, toast]);
-
-  // 저장소: IndexedDB를 쓰고, 쓸 수 없는 환경에서만 기존 localStorage를 쓴다.
-  // 처음 실행 시 IndexedDB가 비어 있으면 localStorage에서 읽은 상태(boot)를 그대로 IndexedDB에 옮겨 저장한다 (localStorage 원본은 지우지 않음).
-  const [mode, setMode] = useState<'loading' | 'idb' | 'local'>(idbAvailable() ? 'loading' : 'local');
+    if (!pendingSave) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [pendingSave]);
   useEffect(() => {
-    if (mode !== 'loading') return;
-    let alive = true;
-    idbLoadRaw()
-      .then(async (raw) => {
-        if (!alive) return;
-        if (raw) {
-          try {
-            const r = parseFullState(JSON.parse(raw));
-            rawDispatch({ type: 'restore', state: r.state });
-            if (r.dropped) toast(`저장 자료 중 ${r.dropped}건은 형식이 올바르지 않아 불러오지 못했습니다.`, 'error');
-          } catch {
-            await idbKeepCopy(raw);
-            toast('브라우저 저장 데이터를 읽지 못해 원본을 따로 보관했습니다. 연구 설정에서 백업 파일로 복원하세요.', 'error');
-          }
-        } else if (boot.state.projects.length || boot.state.materials.length) {
-          toast('저장 공간을 IndexedDB로 옮겼습니다. 이제 용량 걱정 없이 자료를 저장할 수 있습니다.', 'info');
+    if (!edits) return;
+    const timer = setTimeout(() => {
+      queue.current = queue.current.then(async () => {
+        if (!mounted.current || failed.current) return;
+        try {
+          await engine.save(state);
+          await draftQueue.current.catch(() => undefined);
+          await clearRecovery(draftKey, edits).catch(() => undefined);
+          if (mounted.current) setSaved((x) => Math.max(x, edits));
+        } catch (e) {
+          failed.current = true;
+          if (mounted.current) setStorageError(e instanceof Error ? e.message : '저장하지 못했습니다.');
         }
-        setSaveBlocked(false); // IndexedDB에 저장하므로 localStorage 원본은 덮어쓰지 않는다
-        setMode('idb');
-      })
-      .catch(() => alive && setMode('local'));
-    return () => {
-      alive = false;
-    };
-  }, [mode, boot, toast]);
-
-  // IndexedDB 저장은 비동기이므로 순서대로 처리한다 (늦게 끝난 이전 저장이 최신 상태를 덮어쓰지 않도록)
-  const saving = useRef<Promise<unknown>>(Promise.resolve());
-  useEffect(() => {
-    if (mode === 'loading' || saveBlocked) return; // 불러오기 전에는 저장하지 않음 · 읽지 못한 원본을 덮어쓰지 않음
-    const report = (r: { ok: true } | { ok: false; reason: string }) => {
-      if (r.ok) {
-        errRef.current = null;
-        setStorageError(null);
-      } else {
-        if (!errRef.current) toast(`${r.reason}: 변경 내용이 저장되지 않았습니다. 연구 설정 화면에서 전체 백업 파일을 받아 두세요.`, 'error');
-        errRef.current = r.reason;
-        setStorageError(r.reason);
-      }
-    };
-    if (mode === 'local') report(saveState(browserStorage(), state));
-    else saving.current = saving.current.then(() => idbSave(state)).then(report);
-  }, [state, saveBlocked, mode, toast]);
-
-  if (mode === 'loading') return <div className="boot-loading">자료를 불러오는 중…</div>;
-
-  return <StoreContext.Provider value={{ state, dispatch, toast, toasts, storageError, saveBlocked, resumeSave }}>{children}</StoreContext.Provider>;
+      });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [engine, state, edits, retry, draftKey]);
+  const backup = () => downloadFile(`ai-wiki-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(buildBackup(state), null, 2), 'application/json');
+  return <StoreContext.Provider value={{ state, dispatch, toast, toasts, storageError, pendingSave, saveBlocked: !!storageError, resumeSave }}>
+    <div className={`cloud-save-banner ${storageError ? 'cloud-save-error' : ''}`} role="status">
+      {storageError ? <>{storageError} <button className="btn btn-sm" onClick={backup}>현재 내용 백업</button> <button className="btn btn-sm" onClick={resumeSave}>저장 다시 시도</button></> : pendingSave ? 'Supabase에 저장 중… 창을 닫지 마세요.' : '내 계정의 Supabase에 저장됨'}
+    </div>
+    {children}
+  </StoreContext.Provider>;
 }
 
 export function useStore() {
