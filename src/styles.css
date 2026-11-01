@@ -684,3 +684,9 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 .kci-abstract summary { cursor: pointer; color: var(--accent); }
 .kci-abstract p { margin: 4px 0 0; line-height: 1.6; word-break: keep-all; }
 .kci-pager { justify-content: center; margin-top: 10px; }
+
+/* KCI 개인 인증키 */
+.kci-key-box { margin-bottom: 12px; padding: 12px 14px; background: #f7f9fc; border: 1px solid #dde6f2; border-radius: 8px; font-size: 13px; }
+.kci-key-box .io-row input { flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--line-2); border-radius: 6px; }
+.kci-key-box p { margin: 8px 0 0; line-height: 1.6; word-break: keep-all; }
+.kci-key-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }

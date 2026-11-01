@@ -1,9 +1,10 @@
-// KCI Open API 논문 검색 중계. 인증키(KCI_API_KEY)는 서버에만 두고 응답·오류에 싣지 않는다.
+// KCI Open API 논문 검색 중계. 요청한 사용자의 인증키만 사용하고, 저장하거나 응답·오류에 싣지 않는다.
 import { jsonError, requireGoogleUser } from './auth.mjs';
 
 const ENDPOINT = 'https://open.kci.go.kr/po/openapi/openApiSearch.kci';
 const FIELDS = ['title', 'keyword', 'abstract', 'author'];
 const PAGE_SIZE = 20;
+const BODY_LIMIT = 4096;
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
 
 const decode = (s) => s
@@ -51,18 +52,23 @@ export function parseKciXml(xml) {
 export function createKciHandler(env, deps = {}) {
   const request = deps.fetch ?? fetch;
   return async (req) => {
-    if (req.method !== 'GET') return jsonError(405, '지원하지 않는 요청입니다.');
+    if (req.method !== 'POST') return jsonError(405, '지원하지 않는 요청입니다.');
     const auth = await requireGoogleUser(req, env, deps.fetchUser ?? request);
     if (auth.denied) return auth.denied;
-    const key = env.KCI_API_KEY?.trim();
-    if (!key) return jsonError(503, 'KCI 검색 설정이 필요합니다. 서버에 KCI 인증키를 등록해 주세요.');
-
-    const input = new URL(req.url).searchParams;
-    const q = input.get('q')?.trim() ?? '';
-    const field = input.get('field') ?? 'title';
-    const page = Number(input.get('page') ?? 1);
-    const from = input.get('from') ?? '';
-    const to = input.get('to') ?? '';
+    if (Number(req.headers.get('content-length')) > BODY_LIMIT) return jsonError(413, '요청이 너무 큽니다.');
+    let input;
+    try {
+      const text = await req.text();
+      if (text.length > BODY_LIMIT) return jsonError(413, '요청이 너무 큽니다.');
+      input = JSON.parse(text);
+    } catch { return jsonError(400, '요청 형식을 확인해 주세요.'); }
+    const key = input?.kciKey;
+    if (typeof key !== 'string' || !/^[A-Za-z0-9._~-]{4,128}$/.test(key)) return jsonError(400, '본인 KCI 인증키를 입력해 주세요.');
+    const q = typeof input.q === 'string' ? input.q.trim() : '';
+    const field = input.field ?? 'title';
+    const page = Number(input.page ?? 1);
+    const from = typeof input.from === 'string' ? input.from : '';
+    const to = typeof input.to === 'string' ? input.to : '';
     if (!q || q.length > 200 || !FIELDS.includes(field) || !Number.isInteger(page) || page < 1 || page > 500 || !/^(\d{4})?$/.test(from) || !/^(\d{4})?$/.test(to))
       return jsonError(400, '검색 조건을 확인해 주세요.');
 

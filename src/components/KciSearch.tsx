@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, useSyncExternalStore } from 'react';
 import { useStore } from '../store';
 import { normalizeDoi } from '../lib/citation';
-import { KCI_FIELDS, recordToMeta, searchKci, type KciField, type KciRecord, type KciResult } from '../lib/kci-search';
+import { KCI_FIELDS, hasKciKey, recordToMeta, searchKci, setSessionKciKey, subscribeKciKey, type KciField, type KciRecord, type KciResult } from '../lib/kci-search';
 import { Empty } from './ui';
 import { KciReview, type ReviewItem } from './KciImport';
 
@@ -9,7 +9,9 @@ const keyOf = (r: KciRecord) => r.id || r.doi || r.url || r.title;
 
 /** KCI Open API로 논문을 검색하고, 체크한 논문만 확인 창을 거쳐 가져온다 */
 export function KciSearch() {
-  const { state } = useStore();
+  const { state, toast } = useStore();
+  const hasKey = useSyncExternalStore(subscribeKciKey, hasKciKey);
+  const [keyInput, setKeyInput] = useState('');
   const [q, setQ] = useState('');
   const [field, setField] = useState<KciField>('title');
   const [from, setFrom] = useState('');
@@ -46,6 +48,17 @@ export function KciSearch() {
     }
   }
 
+  function applyKey() {
+    try {
+      setSessionKciKey(keyInput);
+      setKeyInput('');
+      setError(null);
+      toast('이 탭에서 사용할 KCI 인증키를 적용했습니다.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   function submit() {
     if (!q.trim()) return setError('검색어를 입력하세요.');
     asked.current = { q: q.trim(), field, from: from.trim(), to: to.trim() };
@@ -75,6 +88,24 @@ export function KciSearch() {
 
   return (
     <>
+      {hasKey ? (
+        <div className="kci-key-row">
+          <span className="ok-tag">이 탭에 본인 KCI 인증키 입력됨</span>
+          <button className="link small" onClick={() => setSessionKciKey('')}>키 지우기</button>
+        </div>
+      ) : (
+        <div className="kci-key-box">
+          <b>KCI 검색에는 본인 인증키가 필요합니다</b>
+          <div className="io-row">
+            <input type="password" aria-label="본인 KCI 인증키" autoComplete="off" spellCheck={false} value={keyInput} onChange={(e) => setKeyInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && keyInput.trim() && applyKey()} placeholder="KCI Open API 인증키" />
+            <button className="btn btn-primary" disabled={!keyInput.trim()} onClick={applyKey}>이 탭에서 사용</button>
+          </div>
+          <p className="muted small">
+            키는 저장하지 않으며 새로고침·탭 닫기·로그아웃 후에는 다시 입력해야 합니다. 검색할 때만 앱 서버를 거쳐 KCI로 전달됩니다.
+            키가 없으면 <a href="https://www.kci.go.kr/kciportal/po/openapi/openDataPackGuide.kci?datasetBean.dtstTyCd=00" target="_blank" rel="noreferrer">KCI에서 신청</a>하거나, <a href="https://www.kci.go.kr" target="_blank" rel="noreferrer">KCI 사이트</a>에서 찾은 논문을 "논문 PDF" 탭으로 넣을 수 있습니다.
+          </p>
+        </div>
+      )}
       <div className="kci-search-bar">
         <select value={field} onChange={(e) => setField(e.target.value as KciField)} aria-label="검색 대상">
           {KCI_FIELDS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
@@ -82,7 +113,7 @@ export function KciSearch() {
         <input className="kci-q" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && submit()} placeholder="예: 모션그래픽, 중국 드라마, 한중 문화콘텐츠" />
         <input className="kci-year" value={from} onChange={(e) => setFrom(e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="시작 연도" aria-label="시작 연도" />
         <input className="kci-year" value={to} onChange={(e) => setTo(e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="끝 연도" aria-label="끝 연도" />
-        <button className="btn btn-primary" onClick={submit} disabled={busy}>{busy ? '검색 중…' : '검색'}</button>
+        <button className="btn btn-primary" onClick={submit} disabled={busy || !hasKey}>{busy ? '검색 중…' : '검색'}</button>
       </div>
       {error && <p className="notice err" role="alert">{error}</p>}
 
