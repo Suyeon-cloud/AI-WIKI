@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { authUser, loginRequired, subscribeAuth } from './lib/auth';
+import { LoginScreen } from './components/LoginScreen';
 import type { PageKey, Project } from './types';
 import { NAV, Sidebar } from './components/Sidebar';
 import { Toasts } from './components/ui';
@@ -20,6 +22,7 @@ const fromHash = (): PageKey => {
 export default function App() {
   const [page, setPage] = useState<PageKey>(fromHash);
   const [dialog, setDialog] = useState<{ edit?: Project } | null>(null);
+  const user = useSyncExternalStore(subscribeAuth, authUser);
 
   useEffect(() => {
     const onHash = () => setPage(fromHash());
@@ -37,6 +40,8 @@ export default function App() {
     () => ({ go, newProject: () => setDialog({}), editProject: (p: Project) => setDialog({ edit: p }) }),
     [go],
   );
+
+  if (loginRequired() && !user) return <LoginScreen />;
 
   return (
     <NavContext.Provider value={nav}>

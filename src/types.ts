@@ -170,7 +170,7 @@ export interface ProjectEvent {
   text: string;
 }
 
-export const AI_OUTPUT_KINDS = ['전체 분석', '개별 분석', '목차 제안', '집필 초안', '학위논문 HWPX'] as const;
+export const AI_OUTPUT_KINDS = ['전체 분석', '개별 분석', '목차 제안', '집필 초안', '학위논문 HWPX', '학술지논문 HWPX'] as const;
 export type AiOutputKind = (typeof AI_OUTPUT_KINDS)[number];
 
 /**
@@ -211,7 +211,14 @@ export interface ThesisDraft {
   keywordsEn: string;
   materialIds: string[]; // 집필 근거 자료 (참고문헌 목록에도 사용)
   updatedAt: string;
+  // 논문 유형별 원고 (없으면 학위논문)
+  docType?: PaperType;
+  journalName?: string; // 투고 학술지명
+  affiliation?: string; // 저자 소속
+  /** 다른 유형으로 전환할 때 보관해 두는 원고 — 유형을 바꿔도 원고가 섞이거나 사라지지 않게 한다 */
+  stash?: Pick<ThesisDraft, 'chapters' | 'abstractKo' | 'abstractEn' | 'keywordsEn'>;
 }
+export type PaperType = '학위논문' | '학술지논문';
 
 export interface AppState {
   materials: Material[];

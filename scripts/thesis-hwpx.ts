@@ -12,7 +12,8 @@ if (!input || !output) {
   process.exit(1);
 }
 const doc = JSON.parse(readFileSync(input, 'utf8').replace(/^﻿/, '')) as ThesisDoc;
-for (const k of ['titleKo', 'department', 'student', 'advisor', 'year', 'month'] as const)
+const required = doc.docType === '학술지논문' ? (['titleKo', 'student'] as const) : (['titleKo', 'department', 'student', 'advisor', 'year', 'month'] as const);
+for (const k of required)
   if (typeof doc[k] !== 'string') {
     console.error(`원고 JSON에 '${k}' 값이 없습니다.`);
     process.exit(1);

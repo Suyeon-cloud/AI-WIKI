@@ -12,7 +12,7 @@ function FlowDiagram({ go }: { go: (p: PageKey) => void }) {
     { no: '③', title: '자료 라이브러리', sub: '주제별 폴더', page: 'library' },
     { no: '④', title: 'AI 분석', sub: '전체 · 선택 논문', page: 'analysis' },
     { no: '⑤', title: '참고문헌', sub: '서지사항 목록', page: 'references' },
-    { no: '⑥', title: 'AI 집필', sub: '외대 서식 원고', page: 'writing' },
+    { no: '⑥', title: 'AI 집필', sub: '학위논문 · 학술지논문', page: 'writing' },
     { no: '⑦', title: 'HWPX 출력·저장', sub: '내려받기 · Drive AI 생성', page: 'writing' },
   ];
   return (
@@ -63,7 +63,7 @@ export function Home() {
     { done: materials.length > 0, title: '자료 모으기', desc: 'KCI 논문 PDF를 끌어다 놓으면 초록·서지 자동 추출', action: '자료 수집', run: () => nav.go('collect') },
     { done: materials.some(hasMyView), title: '나의 관점 기록', desc: '자료마다 내 해석을 직접 적기 (AI가 대신 쓰지 않음)', action: '라이브러리', run: () => nav.go('library') },
     { done: outputs.some((o) => o.kind === '전체 분석'), title: 'AI 전체 분석', desc: '모은 자료 전체에서 쟁점·공백·인사이트 도출', action: 'AI 분석', run: () => nav.go('analysis') },
-    { done: !!thesis?.chapters.some((ch) => ch.text.trim()), title: 'AI 집필 → HWPX', desc: '지도교수·목차를 정하고 외대 서식 원고 생성', action: 'AI 집필', run: () => nav.go('writing') },
+    { done: !!thesis?.chapters.some((ch) => ch.text.trim()), title: 'AI 집필 → HWPX', desc: '논문 유형·목차를 정하고 학위논문 또는 학술지논문 원고 생성', action: 'AI 집필', run: () => nav.go('writing') },
   ];
   const doneCount = checks.filter((x) => x.done).length;
 
@@ -71,11 +71,11 @@ export function Home() {
     <>
       <section className="hero">
         <div>
-          <div className="hero-kicker">HUFS 학위논문 연구 워크스페이스</div>
+          <div className="hero-kicker">논문 연구 워크스페이스</div>
           <h1>모은 자료에서 논문까지, 한 흐름으로</h1>
           <p>
             KCI 논문 PDF를 넣으면 초록과 서지사항이 정리되고, Claude AI가 모은 자료 전체를 읽어 연구 공백과 인사이트를 짚어 줍니다. 마지막에는
-            한국외대 학위논문 서식 그대로 HWPX 원고를 만듭니다.
+            학위논문(한국외대 서식)이나 학술지 투고 원고를 HWPX로 만듭니다.
           </p>
           <div className="btn-group">
             {project ? (
@@ -158,10 +158,10 @@ export function Home() {
               </p>
             </div>
             <div>
-              <h4>✎ AI 집필 — 외대 서식 원고</h4>
+              <h4>✎ AI 집필 — 논문 원고 작성</h4>
               <p>
-                <b>지도교수·목차</b>를 정하면, 학위논문집필 스킬(외대 서식 규칙)에 따라 장별 원고를 쓰고 표지·심사청구서·인정서·참고문헌까지{' '}
-                <b>HWPX</b>로 출력합니다.
+                <b>논문 유형·목차</b>를 정하면 장별 원고를 쓰고 참고문헌까지 <b>HWPX</b>로 출력합니다. 학위논문은 한국외대 서식(표지·심사청구서·인정서 포함)으로,
+                학술지논문은 투고 원고 형식으로 만듭니다.
               </p>
             </div>
           </div>

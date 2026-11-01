@@ -144,6 +144,12 @@ export function normalizeThesis(x: unknown): ThesisDraft | null {
     keywordsEn: str(x.keywordsEn) ?? '',
     materialIds: strArr(x.materialIds),
     updatedAt: isoDate(x.updatedAt) ?? new Date().toISOString(),
+    docType: x.docType === '학술지논문' ? '학술지논문' : '학위논문',
+    journalName: str(x.journalName) ?? '',
+    affiliation: str(x.affiliation) ?? '',
+    stash: isObj(x.stash)
+      ? { chapters: listOf(x.stash.chapters, normalizeChapter), abstractKo: str(x.stash.abstractKo) ?? '', abstractEn: str(x.stash.abstractEn) ?? '', keywordsEn: str(x.stash.keywordsEn) ?? '' }
+      : undefined,
   };
 }
 

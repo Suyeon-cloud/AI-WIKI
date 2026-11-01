@@ -31,6 +31,10 @@ export interface ThesisDoc {
   keywordsEn?: string;
   chapters: { title: string; text: string }[];
   references: string[];
+  /** 없으면 학위논문 */
+  docType?: '학위논문' | '학술지논문';
+  journal?: string;
+  affiliation?: string;
 }
 
 /* ───────── 단위 ───────── */
@@ -247,11 +251,42 @@ export function thesisParagraphs(d: ThesisDoc): Para[] {
   return ps;
 }
 
-function buildSection(ps: Para[], char: Record<CharKey, number>, para: Record<ParaKey, number>): string {
-  // 지면: 19 × 26 cm, 좌 30 · 우 20 mm, 위 30 + 머리말 5 mm, 아래 15 + 꼬리말 15 mm
+/** 학술지 투고 원고: 표지 없이 제목·저자·국문초록·본문·참고문헌·영문초록을 이어서 쓴다 (학술지 규정이 다르면 한글에서 조정) */
+export function journalParagraphs(d: ThesisDoc): Para[] {
+  const ps: Para[] = [];
+  if (d.journal?.trim()) ps.push({ text: `「${d.journal.trim()}」 투고 원고`, char: 'small', para: 'center' });
+  ps.push({ text: d.titleKo, char: 'title', para: 'center' });
+  if (d.subtitle?.trim()) ps.push({ text: `-${d.subtitle.replace(/^-+|-+$/g, '')}-`, char: 'sub', para: 'center' });
+  ps.push({ text: '', char: 'body', para: 'center' });
+  if (d.student?.trim()) ps.push({ text: d.student, char: 'info', para: 'center' });
+  if (d.affiliation?.trim()) ps.push({ text: d.affiliation, char: 'small', para: 'center' });
+  if (d.abstractKo?.trim()) {
+    ps.push({ text: '국문초록', char: 'section', para: 'section' });
+    ps.push(...bodyParas(d.abstractKo));
+    if (d.keywordsKo?.length) ps.push({ text: `주제어: ${d.keywordsKo.join(', ')}`, char: 'bold', para: 'left' });
+  }
+  for (const c of d.chapters) {
+    ps.push({ text: c.title, char: 'chapter', para: 'chapter' });
+    ps.push(...bodyParas(c.text));
+  }
+  ps.push({ text: '참고문헌', char: 'chapter', para: 'chapter', pageBreak: true });
+  for (const r of d.references) ps.push({ text: r, char: 'body', para: 'ref' });
+  if (d.abstractEn?.trim()) {
+    ps.push({ text: d.titleEn || 'Abstract', char: 'section', para: 'center', pageBreak: true });
+    if (d.studentEn?.trim()) ps.push({ text: d.studentEn, char: 'body', para: 'center' });
+    ps.push({ text: 'Abstract', char: 'section', para: 'section' });
+    ps.push(...bodyParas(d.abstractEn));
+    if (d.keywordsEn?.trim()) ps.push({ text: `Keywords: ${d.keywordsEn}`, char: 'bold', para: 'left' });
+  }
+  return ps;
+}
+
+function buildSection(ps: Para[], char: Record<CharKey, number>, para: Record<ParaKey, number>, journal = false): string {
+  // 학위논문 지면: 19 × 26 cm, 좌 30 · 우 20 mm, 위 30 + 머리말 5 mm, 아래 15 + 꼬리말 15 mm / 학술지 원고: A4, 좌우 30 mm
+  const page = journal ? { w: 210, h: 297, left: 30, right: 30 } : { w: 190, h: 260, left: 30, right: 20 };
   const secPr = SEC_PR.replace(
     /<hp:pagePr [^>]*>\s*<hp:margin [^>]*\/>/,
-    `<hp:pagePr landscape="WIDELY" width="${mm(190)}" height="${mm(260)}" gutterType="LEFT_ONLY"><hp:margin header="${mm(5)}" footer="${mm(15)}" gutter="0" left="${mm(30)}" right="${mm(20)}" top="${mm(30)}" bottom="${mm(15)}"/>`,
+    `<hp:pagePr landscape="WIDELY" width="${mm(page.w)}" height="${mm(page.h)}" gutterType="LEFT_ONLY"><hp:margin header="${mm(5)}" footer="${mm(15)}" gutter="0" left="${mm(page.left)}" right="${mm(page.right)}" top="${mm(30)}" bottom="${mm(15)}"/>`,
   );
   const pageNum = '<hp:ctrl><hp:pageNum pos="BOTTOM_CENTER" formatType="DIGIT" sideChar="-"/></hp:ctrl>';
   const first = `<hp:p id="0" paraPrIDRef="${para.center}" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="${char.info}">${secPr}${COL_PR}${pageNum}</hp:run><hp:run charPrIDRef="${char.info}"><hp:t/></hp:run></hp:p>`;
@@ -342,8 +377,9 @@ export function zipStore(files: { name: string; data: Uint8Array }[], date = new
 export function buildThesisHwpx(d: ThesisDoc, now = new Date()): Uint8Array {
   const enc = new TextEncoder();
   const { xml: header, char, para } = buildHeader();
-  const ps = thesisParagraphs(d);
-  const section = buildSection(ps, char, para);
+  const journal = d.docType === '학술지논문';
+  const ps = journal ? journalParagraphs(d) : thesisParagraphs(d);
+  const section = buildSection(ps, char, para, journal);
   const iso = now.toISOString().replace(/\.\d+Z$/, 'Z');
   const hpf = SKELETON_FILES['Contents/content.hpf']
     .replace(/<opf:title\/>/, `<opf:title>${esc(d.titleKo)}</opf:title>`)

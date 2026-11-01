@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Material, ThesisChapter, ThesisDraft } from '../types';
+import type { AiOutputKind, Material, PaperType, ThesisChapter, ThesisDraft } from '../types';
 import { useStore, useProject } from '../store';
 import SKILL_MD from '../../.claude/skills/hufs-thesis-writing/SKILL.md?raw';
+import JOURNAL_SKILL_MD from '../../.claude/skills/journal-article-writing/SKILL.md?raw';
 import { AI_MODEL_LABEL, AiError, generate } from '../lib/ai';
 import { buildThesisHwpx, sectionsOf, type ThesisDoc } from '../lib/hwpx';
 import { checkBib, formatCitation, segsToText, sortForStyle } from '../lib/citation';
@@ -15,6 +16,15 @@ import { useConnections } from '../components/Sidebar';
 
 /** 스킬 파일의 frontmatter를 뺀 본문 = AI 집필 시스템 지침 */
 const SKILL = SKILL_MD.replace(/^---[\s\S]*?---\s*/, '');
+const JOURNAL_SKILL = JOURNAL_SKILL_MD.replace(/^---[\s\S]*?---\s*/, '');
+
+const JOURNAL_OUTLINE: { title: string; sections: string[] }[] = [
+  { title: 'Ⅰ. 서론', sections: [] },
+  { title: 'Ⅱ. 이론적 배경 및 선행연구', sections: ['1. 주요 개념 및 이론', '2. 선행연구 검토'] },
+  { title: 'Ⅲ. 연구 방법', sections: ['1. 연구 대상 및 자료', '2. 분석 방법 및 절차'] },
+  { title: 'Ⅳ. 연구 결과', sections: ['1. 분석 결과', '2. 결과 해석'] },
+  { title: 'Ⅴ. 논의 및 결론', sections: ['1. 논의', '2. 결론 및 제언'] },
+];
 
 const DEFAULT_OUTLINE: { title: string; sections: string[] }[] = [
   { title: 'Ⅰ. 서론', sections: ['1. 연구의 필요성 및 목적', '2. 연구 문제', '3. 연구 방법 및 범위', '4. 선행연구 검토'] },
@@ -68,6 +78,22 @@ export function Writing() {
     );
 
   const set = (patch: Partial<ThesisDraft>) => dispatch({ type: 'thesis', projectId: project.id, patch });
+  const isJournal = t.docType === '학술지논문';
+  /** 논문 유형 전환: 지금 원고는 보관하고, 그 유형으로 쓰던 원고를 꺼낸다 */
+  function switchType(next: PaperType) {
+    if (next === (t!.docType ?? '학위논문')) return;
+    const s = t!.stash;
+    set({
+      docType: next,
+      chapters: s?.chapters ?? [],
+      abstractKo: s?.abstractKo ?? '',
+      abstractEn: s?.abstractEn ?? '',
+      keywordsEn: s?.keywordsEn ?? '',
+      stash: { chapters: t!.chapters, abstractKo: t!.abstractKo, abstractEn: t!.abstractEn, keywordsEn: t!.keywordsEn },
+    });
+    setActive(s?.chapters[0]?.id ?? null);
+    setTodo({});
+  }
   const chapter = t.chapters.find((c) => c.id === active) ?? null;
   const setChapter = (id: string, patch: Partial<ThesisChapter>) => set({ chapters: t.chapters.map((c) => (c.id === id ? { ...c, ...patch } : c)) });
   const outline = t.chapters.map((c) => ({ title: c.title, sections: c.sections.filter((s) => s.trim()) }));
@@ -87,17 +113,19 @@ export function Writing() {
     setBusy(label);
     setChars(0);
     try {
-      return await generate<T>({ system: SKILL, content: o.content, schema: o.schema as Record<string, unknown>, maxTokens: o.maxTokens, onProgress: setChars, signal: ctrl.current.signal });
+      return await generate<T>({ system: isJournal ? JOURNAL_SKILL : SKILL, content: o.content, schema: o.schema as Record<string, unknown>, maxTokens: o.maxTokens, onProgress: setChars, signal: ctrl.current.signal });
     } finally {
       setBusy(null);
     }
   }
 
+  const context = () => thesisContext(project!, title, outline, basis, insight, isJournal ? (t!.journalName ?? '') : undefined);
+
   async function suggestOutline() {
     if (!needAi()) return;
     try {
       const { data, model } = await call<{ chapters: { title: string; sections: string[] }[]; rationale: string }>('outline', {
-        content: `${thesisContext(project!, title, outline, basis, insight)}\n\n위 연구 주제와 자료에 맞는 외대 ${project!.degree} 학위논문 목차(장·절)를 제안하라. 현재 목차가 있으면 다듬어라.`,
+        content: `${context()}\n\n위 연구 주제와 자료에 맞는 ${isJournal ? '학술지 투고 논문' : `외대 ${project!.degree} 학위논문`} 목차(장·절)를 제안하라. 현재 목차가 있으면 다듬어라.`,
         schema: OUTLINE_SCHEMA,
         maxTokens: 8000,
       });
@@ -125,14 +153,14 @@ export function Writing() {
       .join('\n\n');
     try {
       const { data, model } = await call<{ text: string; citedIds: string[]; todo: string[] }>(`ch:${c.id}`, {
-        content: `${thesisContext(project!, title, outline, basis, insight)}
+        content: `${context()}
 
 ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
 [이번에 쓸 장] ${c.title}
 [절 구성] ${c.sections.filter((s) => s.trim()).join(' / ') || '(절을 적절히 구성)'}
 [분량] 공백 포함 약 ${length.toLocaleString()}자
 
-위 장의 본문을 외대 학위논문 문체와 원고 출력 형식(절은 '## ', 항은 '### ')으로 써라.`,
+위 장의 본문을 ${isJournal ? '학술지 논문' : '외대 학위논문'} 문체와 원고 출력 형식(절은 '## ', 항은 '### ')으로 써라.`,
         schema: CHAPTER_SCHEMA,
         maxTokens: 32000,
       });
@@ -199,18 +227,22 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
       keywordsEn: t!.keywordsEn,
       chapters: t!.chapters.map((c) => ({ title: c.title, text: c.text })),
       references: refs.map(refLine),
+      docType: t!.docType ?? '학위논문',
+      journal: t!.journalName,
+      affiliation: t!.affiliation,
     };
   }
 
   async function exportHwpx(toDrive: boolean) {
     if (!t!.chapters.length) return toast('목차와 본문을 먼저 작성하세요.', 'info');
     const bytes = buildThesisHwpx(doc());
-    const name = `${safeFileName(title)}_${project!.degree}학위논문.hwpx`;
+    const label = isJournal ? '학술지논문' : `${project!.degree}학위논문`;
+    const name = `${safeFileName(title)}_${label}.hwpx`;
     const blob = new Blob([bytes], { type: 'application/hwp+zip' });
     const output = {
       id: uid(),
       projectId: project!.id,
-      kind: '학위논문 HWPX' as const,
+      kind: (isJournal ? '학술지논문 HWPX' : '학위논문 HWPX') as AiOutputKind,
       title: `${name}`,
       createdAt: new Date().toISOString(),
       model: AI_MODEL_LABEL,
@@ -222,7 +254,7 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
       const a = Object.assign(document.createElement('a'), { href: url, download: name });
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      dispatch({ type: 'log', event: { projectId: project!.id, kind: '내보내기', text: `학위논문 HWPX를 내려받았습니다 (${name}).` } });
+      dispatch({ type: 'log', event: { projectId: project!.id, kind: '내보내기', text: `${label} HWPX를 내려받았습니다 (${name}).` } });
       toast('HWPX 파일을 내려받았습니다. 한글에서 열어 쪽 번호·목차 쪽수를 확인하세요.');
       return;
     }
@@ -232,7 +264,7 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
       const md = await saveOutputToDrive(output, project!);
       dispatch({ type: 'addOutput', output: { ...output, driveFileId: md.fileId, driveSyncedAt: new Date().toISOString() } });
       if (!project!.driveFolderId) dispatch({ type: 'updateProject', id: project!.id, patch: { driveFolderId: r.folderId, driveCreatedAt: new Date().toISOString() } });
-      dispatch({ type: 'log', event: { projectId: project!.id, kind: '내보내기', text: `학위논문 HWPX를 Drive 'AI 생성' 폴더에 저장했습니다.` } });
+      dispatch({ type: 'log', event: { projectId: project!.id, kind: '내보내기', text: `${label} HWPX를 Drive 'AI 생성' 폴더에 저장했습니다.` } });
       toast(`Google Drive 'AI WIKI/${project!.name}/AI 생성' 폴더에 HWPX와 원고 Markdown을 저장했습니다.`);
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), 'error');
@@ -247,13 +279,24 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
     <>
       <PageHeader
         title="AI 집필"
-        desc="지도교수·목차를 정하면 학위논문집필 스킬(외대 서식)에 따라 장별 원고를 쓰고, 표지부터 참고문헌까지 HWPX로 출력합니다."
-        badges={<><StatusBadge s="ai">{AI_MODEL_LABEL}</StatusBadge><span className="chip chip-strong">스킬: hufs-thesis-writing</span></>}
+        desc="논문 유형과 목차를 정하면 모은 자료를 근거로 장별 원고를 쓰고, 해당 유형의 형식에 맞춰 HWPX로 출력합니다."
+        badges={<><StatusBadge s="ai">{AI_MODEL_LABEL}</StatusBadge><span className="chip chip-strong">스킬: {isJournal ? 'journal-article-writing' : 'hufs-thesis-writing'}</span></>}
       />
+
+      <div className="tabs analysis-tabs paper-tabs" role="tablist">
+        <button role="tab" aria-selected={!isJournal} className={!isJournal ? 'active' : ''} onClick={() => switchType('학위논문')} disabled={!!busy}>
+          <b>학위논문</b>
+          <small>한국외대 학위논문 서식 · 표지·심사청구서·인정서 포함</small>
+        </button>
+        <button role="tab" aria-selected={isJournal} className={isJournal ? 'active' : ''} onClick={() => switchType('학술지논문')} disabled={!!busy}>
+          <b>학술지논문</b>
+          <small>투고 원고 형식 · 제목·초록·본문·참고문헌 · 유형별 원고는 따로 보관</small>
+        </button>
+      </div>
 
       <div className="writing-layout">
         <div className="writing-side">
-          <Card title="논문 정보 (표지·심사청구서)" extra={<button className="link small" onClick={() => nav.editProject(project)}>학과·지도교수 수정</button>}>
+          <Card title={isJournal ? '논문 정보' : '논문 정보 (표지·심사청구서)'} extra={<button className="link small" onClick={() => nav.editProject(project)}>{isJournal ? '저자 정보 수정' : '학과·지도교수 수정'}</button>}>
             <label className="field">
               <span className="field-label">논문 제목</span>
               <input value={t.titleKo} onChange={(e) => set({ titleKo: e.target.value })} placeholder={project.topic} />
@@ -266,6 +309,21 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
               <span className="field-label">영문 제목</span>
               <input value={t.titleEn} onChange={(e) => set({ titleEn: e.target.value })} placeholder="초록 생성 시 AI가 제안" />
             </label>
+            {isJournal ? (
+              <>
+                <label className="field">
+                  <span className="field-label">투고 학술지</span>
+                  <input value={t.journalName ?? ''} onChange={(e) => set({ journalName: e.target.value })} placeholder="미정이면 비워 두세요" />
+                </label>
+                <label className="field">
+                  <span className="field-label">저자 소속</span>
+                  <input value={t.affiliation ?? ''} onChange={(e) => set({ affiliation: e.target.value })} placeholder="예: 한국외국어대학교 대학원 석사과정" />
+                </label>
+                <dl className="meta small-meta">
+                  <dt>저자</dt><dd>{project.student || <span className="warn-tag">미입력</span>}</dd>
+                </dl>
+              </>
+            ) : (
             <dl className="meta small-meta">
               <dt>학위</dt><dd>{project.degree}</dd>
               <dt>학과</dt><dd>{project.department || <span className="warn-tag">미입력</span>}</dd>
@@ -277,6 +335,7 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
                 <input value={t.submitMonth} onChange={(e) => set({ submitMonth: e.target.value })} style={{ width: 44 }} /> 월
               </dd>
             </dl>
+            )}
           </Card>
 
           <Card title={`근거 자료 (${basis.length}건)`} extra={<span className="muted small">AI는 이 자료만 인용</span>}>
@@ -312,13 +371,13 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
             title="목차"
             extra={
               <div className="btn-group">
-                <button className="btn btn-sm" onClick={() => { set({ chapters: toChapters(DEFAULT_OUTLINE, t.chapters) }); setActive(null); }} disabled={!!busy}>기본 목차</button>
+                <button className="btn btn-sm" onClick={() => { set({ chapters: toChapters(isJournal ? JOURNAL_OUTLINE : DEFAULT_OUTLINE, t.chapters) }); setActive(null); }} disabled={!!busy}>기본 목차</button>
                 <button className="btn btn-sm btn-ai" onClick={suggestOutline} disabled={!!busy}>{busy === 'outline' ? '제안 중…' : 'AI 목차 제안'}</button>
               </div>
             }
           >
             {t.chapters.length === 0 ? (
-              <Empty>지도교수와 협의한 목차를 입력하거나 기본 목차·AI 제안으로 시작하세요.</Empty>
+              <Empty>{isJournal ? '투고 계획에 맞는 목차를 입력하거나' : '지도교수와 협의한 목차를 입력하거나'} 기본 목차·AI 제안으로 시작하세요.</Empty>
             ) : (
               <ul className="outline-edit">
                 {t.chapters.map((c, i) => (
@@ -400,12 +459,21 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
             </div>
           </Card>
 
-          <Card title="출력 — 한국외대 학위논문 서식 HWPX">
+          <Card title={isJournal ? '출력 — 학술지 투고 원고 HWPX' : '출력 — 한국외대 학위논문 서식 HWPX'}>
             <ol className="export-steps">
-              <li>겉표지 · 속표지 · 심사청구서(지도교수) · 인정서(심사위원 {project.degree === '박사' ? 5 : 3}인)</li>
-              <li>국문초록 · 목차 · 본문 {t.chapters.length}개 장</li>
+              {isJournal ? (
+                <>
+                  <li>제목 · 저자 · 소속 · 국문초록 · 주제어</li>
+                  <li>본문 {t.chapters.length}개 장</li>
+                </>
+              ) : (
+                <>
+                  <li>겉표지 · 속표지 · 심사청구서(지도교수) · 인정서(심사위원 {project.degree === '박사' ? 5 : 3}인)</li>
+                  <li>국문초록 · 목차 · 본문 {t.chapters.length}개 장</li>
+                </>
+              )}
               <li>참고문헌 {refs.length}건 (APA 7, 국문→외국 문헌 순){missingBib.length > 0 && <span className="warn-tag">서지 미완성 {missingBib.length}건 제외 — <button className="link small" onClick={() => nav.go('references')}>참고문헌에서 보완</button></span>}</li>
-              <li>ABSTRACT · 19×26cm 지면, 좌 3cm · 우 2cm, 쪽 번호 아래 가운데</li>
+              {isJournal ? <li>영문 제목 · Abstract · Keywords · A4 지면, 좌우 3cm, 쪽 번호 아래 가운데</li> : <li>ABSTRACT · 19×26cm 지면, 좌 3cm · 우 2cm, 쪽 번호 아래 가운데</li>}
             </ol>
             <div className="btn-group">
               <button className="btn btn-primary" onClick={() => exportHwpx(false)} disabled={!!busy}>HWPX 내려받기</button>
@@ -414,10 +482,14 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
               </button>
               <button className="btn" onClick={() => downloadFile(`${safeFileName(title)}_원고.json`, JSON.stringify(doc(), null, 2), 'application/json')}>원고 JSON (스킬용)</button>
             </div>
-            <p className="muted small">AI가 쓴 원고는 초안입니다. 인용·사실관계를 원문과 대조하고, 한글에서 목차 쪽수와 표지 줄 간격을 확인한 뒤 제출하세요.</p>
+            <p className="muted small">
+              {isJournal
+                ? 'AI가 쓴 원고는 초안입니다. 인용·사실관계를 원문과 대조하고, 투고 학술지 규정에 맞게 한글에서 글꼴·여백·분량을 조정한 뒤 투고하세요.'
+                : 'AI가 쓴 원고는 초안입니다. 인용·사실관계를 원문과 대조하고, 한글에서 목차 쪽수와 표지 줄 간격을 확인한 뒤 제출하세요.'}
+            </p>
           </Card>
 
-          <OutputList kinds={['목차 제안', '집필 초안', '학위논문 HWPX']} title="집필 기록 (AI 결과물)" />
+          <OutputList kinds={['목차 제안', '집필 초안', '학위논문 HWPX', '학술지논문 HWPX']} title="집필 기록 (AI 결과물)" />
         </div>
       </div>
     </>

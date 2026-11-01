@@ -14,7 +14,8 @@ const API_KEY = (import.meta.env.VITE_GOOGLE_API_KEY ?? '').trim();
 const APP_ID = (import.meta.env.VITE_GOOGLE_APP_ID ?? '').trim();
 
 // drive.file: 이 앱이 만든 파일 쓰기 · drive.readonly: 사용자가 Drive에 직접 올린 PDF 등을 목록에서 골라 가져오기
-const SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+// openid email profile: Google 로그인 시 이름·이메일 확인 (로그인 한 번으로 Drive까지 연결)
+const SCOPE = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
 const API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
@@ -146,7 +147,7 @@ export function driveState() {
 let tokenClient: TokenClient | null = null;
 
 /** Google 계정 연결 — 반드시 버튼 클릭 등 사용자 동작에서 호출 (팝업 차단 방지) */
-export async function connectDrive(): Promise<void> {
+export async function connectDrive(prompt?: string): Promise<void> {
   if (!driveConfigured()) throw new DriveError('VITE_GOOGLE_CLIENT_ID가 설정되지 않았습니다.', 'auth');
   const prev = status;
   setStatus('connecting');
@@ -175,7 +176,7 @@ export async function connectDrive(): Promise<void> {
             ),
           ),
       });
-      tokenClient.requestAccessToken({ prompt: prev === 'expired' ? '' : 'consent' });
+      tokenClient.requestAccessToken({ prompt: prompt ?? (prev === 'expired' ? '' : 'consent') });
     });
     setStatus('connected');
   } catch (e) {
@@ -183,6 +184,11 @@ export async function connectDrive(): Promise<void> {
     throw e;
   }
 }
+
+/** 로그인 버튼을 누르기 전에 Google 스크립트를 미리 불러온다 (팝업 차단 방지) */
+export const preloadGoogle = () => loadScript('https://accounts.google.com/gsi/client').catch(() => undefined);
+/** 로그인 직후 사용자 정보를 읽을 때 쓰는 현재 접근 토큰 */
+export const currentAccessToken = () => token?.value ?? null;
 
 /** 연결 해제 — Google에 토큰 폐기를 요청하고 메모리·sessionStorage에서 지운다 */
 export function disconnectDrive() {

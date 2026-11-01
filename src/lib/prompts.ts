@@ -297,13 +297,12 @@ export const ABSTRACT_SCHEMA = {
   },
 } as const;
 
-export function thesisContext(p: Project, title: string, outline: { title: string; sections: string[] }[], ms: Material[], insight?: string): string {
+export function thesisContext(p: Project, title: string, outline: { title: string; sections: string[] }[], ms: Material[], insight?: string, journalName?: string): string {
   return [
     `[논문 정보]`,
-    `학위: ${p.degree}`,
-    `논문 제목: ${title}`,
-    `학과: ${p.department || '(미입력)'}`,
-    `지도교수: ${p.advisor || '(미입력)'}`,
+    ...(journalName !== undefined
+      ? [`논문 유형: 학술지 투고 논문`, `투고 학술지: ${journalName || '(미정)'}`, `논문 제목: ${title}`]
+      : [`학위: ${p.degree}`, `논문 제목: ${title}`, `학과: ${p.department || '(미입력)'}`, `지도교수: ${p.advisor || '(미입력)'}`]),
     `연구 주제: ${p.topic}`,
     `키워드: ${p.keywords.join(', ')}`,
     p.overview && `연구 개요: ${p.overview}`,

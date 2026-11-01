@@ -1,4 +1,5 @@
-import { useEffect, useReducer } from 'react';
+import { useEffect, useReducer, useSyncExternalStore } from 'react';
+import { authUser, signOut, subscribeAuth } from '../lib/auth';
 import type { PageKey } from '../types';
 import { useStore, useProject } from '../store';
 import { aiState, subscribeAi } from '../lib/ai';
@@ -33,6 +34,7 @@ export function Sidebar({ page, onNavigate }: { page: PageKey; onNavigate: (p: P
   const { project, materials } = useProject();
   const nav = useNav();
   const c = useConnections();
+  const user = useSyncExternalStore(subscribeAuth, authUser);
 
   return (
     <aside className="sidebar">
@@ -40,7 +42,7 @@ export function Sidebar({ page, onNavigate }: { page: PageKey; onNavigate: (p: P
         <div className="brand-mark">AI</div>
         <div>
           <div className="brand-name">AI WIKI</div>
-          <div className="brand-sub">HUFS 학위논문 연구 워크스페이스</div>
+          <div className="brand-sub">논문 연구 워크스페이스</div>
         </div>
       </div>
 
@@ -84,6 +86,16 @@ export function Sidebar({ page, onNavigate }: { page: PageKey; onNavigate: (p: P
       </nav>
 
       <div className="sidebar-foot">
+        {user && (
+          <div className="account-box">
+            {user.picture ? <img src={user.picture} alt="" referrerPolicy="no-referrer" /> : <span className="account-initial">{user.name.slice(0, 1)}</span>}
+            <div className="account-text">
+              <b>{user.name}</b>
+              <span>{user.email}</span>
+            </div>
+            <button className="link small" onClick={signOut}>로그아웃</button>
+          </div>
+        )}
         <div className="conn-list">
           <button className={`conn ${c.ai ? 'on' : ''}`} onClick={() => onNavigate('settings')} title="Claude API 키 설정">
             <i /> Claude AI {c.ai ? '연결됨' : '설정 필요'}

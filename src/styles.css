@@ -648,3 +648,25 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 .modal .form-grid label { display: block; }
 .modal .form-grid label > input, .modal .form-grid label > select, .modal .form-grid label > textarea { display: block; margin-top: 4px; }
 .modal .form-grid .req { margin-left: 2px; }
+
+/* ───────── 로그인 화면 · 계정 표시 ───────── */
+.login-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #23395d 0%, #2f5d9c 100%); }
+.login-card { width: min(420px, 100%); padding: 36px 32px; text-align: center; background: var(--panel); border-radius: 16px; box-shadow: 0 18px 48px rgba(15, 25, 45, 0.3); }
+.login-mark { width: 52px; height: 52px; margin: 0 auto 12px; border-radius: 12px; font-size: 18px; }
+.login-card h1 { font-size: 24px; }
+.login-sub { margin: 2px 0 14px; color: var(--muted); font-size: 13px; }
+.login-desc { margin: 0 0 22px; font-size: 13.5px; line-height: 1.65; word-break: keep-all; }
+.login-google {
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 11px 14px;
+  background: #fff; border: 1px solid var(--line-2); border-radius: 8px; font-size: 14px; font-weight: 600; color: var(--text); cursor: pointer;
+}
+.login-google:hover:not(:disabled) { background: #f7f9fc; border-color: var(--accent); }
+.login-google:disabled { opacity: 0.6; cursor: wait; }
+.login-error { margin: 12px 0 0; padding: 8px 10px; border-radius: 6px; background: #fbeeee; color: var(--danger); font-size: 12.5px; line-height: 1.5; }
+.login-note { margin: 14px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.6; word-break: keep-all; }
+.account-box { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.account-box img, .account-initial { flex: 0 0 28px; width: 28px; height: 28px; border-radius: 50%; }
+.account-initial { display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 12px; }
+.account-text { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+.account-text b { color: var(--text); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-text span { font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
