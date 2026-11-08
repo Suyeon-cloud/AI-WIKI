@@ -13,6 +13,7 @@
  */
 import { COL_PR, HEADER_XML, SECTION_OPEN, SEC_PR, SKELETON_FILES } from './hwpx-skeleton';
 import { hasFootnoteSyntax, segmentLine, splitNotes, stripMarks, type NoteSeg } from './footnotes';
+import type { TemplateRole } from './hwpx-template';
 
 export interface ThesisDoc {
   degree: '석사' | '박사';
@@ -77,16 +78,24 @@ const PARAS: Record<ParaKey, ParaSpec> = {
   right: { align: 'RIGHT', line: 160 },
 };
 
-function buildHeader(): { xml: string; char: Record<CharKey, number>; para: Record<ParaKey, number> } {
-  let xml = HEADER_XML;
+/**
+ * header.xml에 이 앱의 글자·문단 모양을 덧붙인다. base: 골격 또는 업로드 양식의 header.xml.
+ * 새 id는 기존 id 최댓값 다음부터 매겨 양식의 id와 겹치지 않게 한다 (골격은 id가 이어져 있어 결과가 이전과 같다).
+ * withNote: 양식에 각주 스타일이 없을 때 각주용 글자·문단 모양도 덧붙인다.
+ */
+function buildHeader(base = HEADER_XML, withNote = false, withGap = false): { xml: string; char: Record<CharKey, number>; para: Record<ParaKey, number>; note?: NoteRef; gap?: number } {
+  let xml = base;
   const charBase = xml.match(/<hh:charPr id="0"[\s\S]*?<\/hh:charPr>/)![0];
   const paraBase = xml.match(/<hh:paraPr id="0"[\s\S]*?<\/hh:paraPr>/)![0];
   const charCnt = Number(xml.match(/<hh:charProperties itemCnt="(\d+)"/)![1]);
   const paraCnt = Number(xml.match(/<hh:paraProperties itemCnt="(\d+)"/)![1]);
+  const maxId = (tag: string) => Math.max(-1, ...[...xml.matchAll(new RegExp(`<hh:${tag} id="(\\d+)"`, 'g'))].map((m) => Number(m[1])));
+  const charStart = Math.max(charCnt, maxId('charPr') + 1);
+  const paraStart = Math.max(paraCnt, maxId('paraPr') + 1);
 
   const char = {} as Record<CharKey, number>;
   const charXml = (Object.keys(CHARS) as CharKey[]).map((k, i) => {
-    const id = charCnt + i;
+    const id = charStart + i;
     char[k] = id;
     let c = charBase.replace('id="0"', `id="${id}"`).replace(/height="\d+"/, `height="${pt(CHARS[k].size)}"`);
     if (CHARS[k].bold) c = c.replace(/(<hh:offset [^>]*\/>)/, '$1<hh:bold/>');
@@ -94,11 +103,8 @@ function buildHeader(): { xml: string; char: Record<CharKey, number>; para: Reco
   });
 
   const para = {} as Record<ParaKey, number>;
-  const paraXml = (Object.keys(PARAS) as ParaKey[]).map((k, i) => {
-    const id = paraCnt + i;
-    para[k] = id;
-    const s = PARAS[k];
-    return paraBase
+  const paraOf = (id: number, s: ParaSpec) =>
+    paraBase
       .replace('id="0"', `id="${id}"`)
       .replace(/<hh:align horizontal="[A-Z]+"/, `<hh:align horizontal="${s.align}"`)
       .replace(/keepWithNext="\d"/, `keepWithNext="${s.keepWithNext ? 1 : 0}"`)
@@ -107,14 +113,34 @@ function buildHeader(): { xml: string; char: Record<CharKey, number>; para: Reco
       .replace(/<hc:prev value="-?\d+"/g, `<hc:prev value="${s.prev ?? 0}"`)
       .replace(/<hc:next value="-?\d+"/g, `<hc:next value="${s.next ?? 0}"`)
       .replace(/<hh:lineSpacing type="PERCENT" value="\d+"/g, `<hh:lineSpacing type="PERCENT" value="${s.line ?? 160}"`);
+  const paraXml = (Object.keys(PARAS) as ParaKey[]).map((k, i) => {
+    const id = paraStart + i;
+    para[k] = id;
+    return paraOf(id, PARAS[k]);
   });
+
+  // 양식에 각주 스타일이 없을 때: 각주용 9pt 글자 모양과 문단 모양을 덧붙여 스타일 없이(0) 쓴다
+  let note: NoteRef | undefined;
+  if (withNote) {
+    const charId = charStart + charXml.length;
+    const paraId = paraStart + paraXml.length;
+    charXml.push(charBase.replace('id="0"', `id="${charId}"`).replace(/height="\d+"/, `height="${pt(9)}"`));
+    paraXml.push(paraOf(paraId, { align: 'JUSTIFY', line: 130 }));
+    note = { style: 0, para: paraId, char: charId };
+  }
+  // 양식 적용 시 겉표지·속표지 빈 줄용 10pt 글자 모양 (양식 글꼴은 줄이 더 길어져 쪽이 넘칠 수 있다)
+  let gap: number | undefined;
+  if (withGap) {
+    gap = charStart + charXml.length;
+    charXml.push(charBase.replace('id="0"', `id="${gap}"`).replace(/height="\d+"/, `height="${pt(GAP_PT)}"`));
+  }
 
   xml = xml
     .replace(/<hh:charProperties itemCnt="\d+">/, `<hh:charProperties itemCnt="${charCnt + charXml.length}">`)
     .replace('</hh:charProperties>', `${charXml.join('')}</hh:charProperties>`)
     .replace(/<hh:paraProperties itemCnt="\d+">/, `<hh:paraProperties itemCnt="${paraCnt + paraXml.length}">`)
     .replace('</hh:paraProperties>', `${paraXml.join('')}</hh:paraProperties>`);
-  return { xml, char, para };
+  return { xml, char, para, note, gap };
 }
 
 /* ───────── 본문 ───────── */
@@ -133,17 +159,31 @@ interface Para {
   para: ParaKey;
   pageBreak?: boolean;
   runs?: NoteSeg[]; // 각주가 있는 문단만: 글자/각주 조각 (text는 각주 표시를 뺀 글자)
+  role?: TemplateRole; // 양식 스타일을 적용할 수 있는 본문 문단의 역할 (표지·목차 등은 없음 → 내장 서식 유지)
+  gap?: boolean; // 겉표지·속표지의 빈 줄 — 양식 적용 시 글꼴이 달라 쪽이 넘치지 않도록 줄 높이를 줄인다
+}
+
+/** 업로드 양식 (2단계). 넘기지 않으면 지금까지와 바이트까지 같은 출력 */
+export interface HwpxTemplate {
+  /** 양식 header.xml — 있으면 골격 대신 이 위에 내장 글자·문단 모양을 덧붙이고, 역할별 양식 스타일을 쓴다 */
+  header?: string;
+  roles?: Partial<Record<TemplateRole, { style: string; para: string; char: string }>>;
+  /** 양식 쪽 설정 (사용자가 고른 경우에만). 숫자만 받아 다시 만든다 */
+  page?: { landscape: 'WIDELY' | 'NARROWLY'; width: number; height: number; margin: Record<'header' | 'footer' | 'gutter' | 'left' | 'right' | 'top' | 'bottom', number> };
 }
 
 /**
  * 한글 각주 객체. 한글로 각주를 넣어 저장한 문서의 구조를 따른다.
- * 내용 문단은 골격(header.xml)의 '각주' 스타일(id 15 → 문단 모양 10, 글자 모양 3)을 쓴다.
+ * 내용 문단은 골격(header.xml)의 '각주' 스타일(id 15 → 문단 모양 10, 글자 모양 3)을 쓴다. 양식을 쓰면 양식의 각주 스타일(또는 덧붙인 각주 모양)을 쓴다.
  */
-const NOTE_STYLE = { style: 15, para: 10, char: 3 };
-const noteXml = (n: number, text: string) =>
+type NoteRef = { style: number | string; para: number | string; char: number | string };
+const NOTE_STYLE: NoteRef = { style: 15, para: 10, char: 3 };
+/** 양식 적용 시 겉표지·속표지 빈 줄 글자 크기 (내장 서식 14pt → 8pt, 표지·속표지마다 약 58mm 여유) */
+export const GAP_PT = 8;
+const noteXml = (n: number, text: string, ref: NoteRef = NOTE_STYLE) =>
   `<hp:ctrl><hp:footNote number="${n}" suffixChar="41" instId="${1000000000 + n}">` +
   '<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">' +
-  `<hp:p id="0" paraPrIDRef="${NOTE_STYLE.para}" styleIDRef="${NOTE_STYLE.style}" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="${NOTE_STYLE.char}">` +
+  `<hp:p id="0" paraPrIDRef="${ref.para}" styleIDRef="${ref.style}" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="${ref.char}">` +
   `<hp:ctrl><hp:autoNum num="${n}" numType="FOOTNOTE"><hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/></hp:autoNum></hp:ctrl>` +
   `<hp:t> ${esc(text)}</hp:t></hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl>`;
 
@@ -155,18 +195,20 @@ function front(d: ThesisDoc): Para[] {
   const blank = (n: number, ch: CharKey = 'info'): Para[] => Array.from({ length: n }, () => ({ text: '', char: ch, para: 'center' }));
   const dept = d.department || '○○학과';
   const name = d.student || '홍길동';
+  // 겉표지·속표지의 빈 줄은 gap으로 표시 (양식이 없으면 출력은 이전과 같다)
+  const gaps = (n: number): Para[] => blank(n).map((p) => ({ ...p, gap: true }));
   const cover = (pageBreak: boolean): Para[] => [
-    { text: '', char: 'info', para: 'center', pageBreak },
-    ...blank(2),
+    { text: '', char: 'info', para: 'center', pageBreak, gap: true },
+    ...gaps(2),
     { text: deg, char: 'info', para: 'center' },
-    ...blank(3),
+    ...gaps(3),
     { text: d.titleKo, char: 'title', para: 'center' },
     ...(d.subtitle ? [{ text: `-${d.subtitle.replace(/^-+|-+$/g, '')}-`, char: 'sub' as CharKey, para: 'center' as ParaKey }] : []),
-    ...blank(9),
+    ...gaps(9),
     { text: '한국외국어대학교 대학원', char: 'info', para: 'center' },
-    ...blank(1),
+    ...gaps(1),
     { text: spaced(dept.replace(/학과$/, ''), '  ') + (dept.endsWith('학과') ? '  학  과' : ''), char: 'info', para: 'center' },
-    ...blank(1),
+    ...gaps(1),
     { text: spaced(name, '     '), char: 'info', para: 'center' },
   ];
   const date = `${d.year} 년   ${d.month} 월     일`;
@@ -213,10 +255,10 @@ function bodyParas(text: string): Para[] {
     const line = raw.trim();
     if (!line) continue;
     let p: Para;
-    if (line.startsWith('### ')) p = { text: line.slice(4).trim(), char: 'bold', para: 'left' };
-    else if (line.startsWith('## ')) p = { text: line.slice(3).trim(), char: 'section', para: 'section' };
-    else if (line.startsWith('# ')) p = { text: line.slice(2).trim(), char: 'chapter', para: 'chapter' };
-    else p = { text: line.replace(/\*\*(.+?)\*\*/g, '$1'), char: 'body', para: 'body' };
+    if (line.startsWith('### ')) p = { text: line.slice(4).trim(), char: 'bold', para: 'left', role: 'subsection' };
+    else if (line.startsWith('## ')) p = { text: line.slice(3).trim(), char: 'section', para: 'section', role: 'section' };
+    else if (line.startsWith('# ')) p = { text: line.slice(2).trim(), char: 'chapter', para: 'chapter', role: 'chapter' };
+    else p = { text: line.replace(/\*\*(.+?)\*\*/g, '$1'), char: 'body', para: 'body', role: 'body' };
     if (notes) {
       const runs = segmentLine(p.text, notes.defs);
       if (runs.some((r) => 'note' in r)) p = { ...p, text: runs.map((r) => ('text' in r ? r.text : '')).join(''), runs };
@@ -251,12 +293,12 @@ export function thesisParagraphs(d: ThesisDoc): Para[] {
   if (d.abstractEn?.trim()) ps.push({ text: 'ABSTRACT', char: 'bold', para: 'left' });
   // 본문
   for (const c of d.chapters) {
-    ps.push({ text: c.title, char: 'chapter', para: 'chapter', pageBreak: true });
+    ps.push({ text: c.title, char: 'chapter', para: 'chapter', pageBreak: true, role: 'chapter' });
     ps.push(...bodyParas(c.text));
   }
   // 참고문헌
   ps.push({ text: '참 고 문 헌', char: 'chapter', para: 'chapter', pageBreak: true });
-  for (const r of d.references) ps.push({ text: r, char: 'body', para: 'ref' });
+  for (const r of d.references) ps.push({ text: r, char: 'body', para: 'ref', role: 'reference' });
   // ABSTRACT (서식 7)
   if (d.abstractEn?.trim()) {
     ps.push({ text: 'ABSTRACT', char: 'chapter', para: 'chapter', pageBreak: true });
@@ -287,11 +329,11 @@ export function journalParagraphs(d: ThesisDoc): Para[] {
     if (d.keywordsKo?.length) ps.push({ text: `주제어: ${d.keywordsKo.join(', ')}`, char: 'bold', para: 'left' });
   }
   for (const c of d.chapters) {
-    ps.push({ text: c.title, char: 'chapter', para: 'chapter' });
+    ps.push({ text: c.title, char: 'chapter', para: 'chapter', role: 'chapter' });
     ps.push(...bodyParas(c.text));
   }
   ps.push({ text: '참고문헌', char: 'chapter', para: 'chapter', pageBreak: true });
-  for (const r of d.references) ps.push({ text: r, char: 'body', para: 'ref' });
+  for (const r of d.references) ps.push({ text: r, char: 'body', para: 'ref', role: 'reference' });
   if (d.abstractEn?.trim()) {
     ps.push({ text: d.titleEn || 'Abstract', char: 'section', para: 'center', pageBreak: true });
     if (d.studentEn?.trim()) ps.push({ text: d.studentEn, char: 'body', para: 'center' });
@@ -302,27 +344,35 @@ export function journalParagraphs(d: ThesisDoc): Para[] {
   return ps;
 }
 
-function buildSection(ps: Para[], char: Record<CharKey, number>, para: Record<ParaKey, number>, journal = false): string {
+function buildSection(ps: Para[], char: Record<CharKey, number>, para: Record<ParaKey, number>, journal = false, tpl?: HwpxTemplate, note: NoteRef = NOTE_STYLE, gap?: number): string {
   // 학위논문 지면: 19 × 26 cm, 좌 30 · 우 20 mm, 위 30 + 머리말 5 mm, 아래 15 + 꼬리말 15 mm / 학술지 원고: A4, 좌우 30 mm
   const page = journal ? { w: 210, h: 297, left: 30, right: 30 } : { w: 190, h: 260, left: 30, right: 20 };
-  const secPr = SEC_PR.replace(
+  const tp = tpl?.page;
+  let secPr = SEC_PR.replace(
     /<hp:pagePr [^>]*>\s*<hp:margin [^>]*\/>/,
-    `<hp:pagePr landscape="WIDELY" width="${mm(page.w)}" height="${mm(page.h)}" gutterType="LEFT_ONLY"><hp:margin header="${mm(5)}" footer="${mm(15)}" gutter="0" left="${mm(page.left)}" right="${mm(page.right)}" top="${mm(30)}" bottom="${mm(15)}"/>`,
+    tp
+      ? `<hp:pagePr landscape="${tp.landscape}" width="${tp.width}" height="${tp.height}" gutterType="LEFT_ONLY"><hp:margin header="${tp.margin.header}" footer="${tp.margin.footer}" gutter="${tp.margin.gutter}" left="${tp.margin.left}" right="${tp.margin.right}" top="${tp.margin.top}" bottom="${tp.margin.bottom}"/>`
+      : `<hp:pagePr landscape="WIDELY" width="${mm(page.w)}" height="${mm(page.h)}" gutterType="LEFT_ONLY"><hp:margin header="${mm(5)}" footer="${mm(15)}" gutter="0" left="${mm(page.left)}" right="${mm(page.right)}" top="${mm(30)}" bottom="${mm(15)}"/>`,
   );
+  // 양식 header에 개요 번호(numbering id 1)가 없으면 구역 설정이 없는 id를 가리키지 않도록 0으로 둔다
+  if (tpl?.header && !/<hh:numbering id="1"/.test(tpl.header)) secPr = secPr.replace('outlineShapeIDRef="1"', 'outlineShapeIDRef="0"');
   const pageNum = '<hp:ctrl><hp:pageNum pos="BOTTOM_CENTER" formatType="DIGIT" sideChar="-"/></hp:ctrl>';
   const first = `<hp:p id="0" paraPrIDRef="${para.center}" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="${char.info}">${secPr}${COL_PR}${pageNum}</hp:run><hp:run charPrIDRef="${char.info}"><hp:t/></hp:run></hp:p>`;
   // 각주 번호는 문서 순서대로 1부터 이어진다
   let noteNo = 0;
   const runXml = (p: Para) => {
     if (!p.runs) return p.text ? `<hp:t>${esc(p.text)}</hp:t>` : '<hp:t/>';
-    const xml = p.runs.map((r) => ('note' in r ? noteXml(++noteNo, r.note) : r.text ? `<hp:t>${esc(r.text)}</hp:t>` : '')).join('');
+    const xml = p.runs.map((r) => ('note' in r ? noteXml(++noteNo, r.note, note) : r.text ? `<hp:t>${esc(r.text)}</hp:t>` : '')).join('');
     return 'note' in p.runs[p.runs.length - 1] ? `${xml}<hp:t/>` : xml;
   };
+  // 양식 스타일: 역할이 있는 본문 문단만, 양식 header를 쓸 때만 적용 (표지·목차 등은 내장 모양 유지)
+  const styleOf = (p: Para) => (tpl?.header && p.role ? tpl.roles?.[p.role] : undefined);
   const body = ps
-    .map(
-      (p, i) =>
-        `<hp:p id="${i + 1}" paraPrIDRef="${para[p.para]}" styleIDRef="0" pageBreak="${p.pageBreak ? 1 : 0}" columnBreak="0" merged="0"><hp:run charPrIDRef="${char[p.char]}">${runXml(p)}</hp:run></hp:p>`,
-    )
+    .map((p, i) => {
+      const s = styleOf(p);
+      const c = s ? s.char : p.gap && gap !== undefined ? gap : char[p.char];
+      return `<hp:p id="${i + 1}" paraPrIDRef="${s ? s.para : para[p.para]}" styleIDRef="${s ? s.style : 0}" pageBreak="${p.pageBreak ? 1 : 0}" columnBreak="0" merged="0"><hp:run charPrIDRef="${c}">${runXml(p)}</hp:run></hp:p>`;
+    })
     .join('');
   return `${SECTION_OPEN}${first}${body}</hs:sec>`;
 }
@@ -401,18 +451,20 @@ export function zipStore(files: { name: string; data: Uint8Array }[], date = new
   return out;
 }
 
-/** HWPX의 header.xml·section0.xml 내용 (검사에서도 사용) */
-export function thesisXml(d: ThesisDoc) {
-  const { xml: header, char, para } = buildHeader();
+/** HWPX의 header.xml·section0.xml 내용 (검사에서도 사용). tpl을 주지 않으면 이전과 같은 결과 */
+export function thesisXml(d: ThesisDoc, tpl?: HwpxTemplate) {
+  const footnoteStyle = tpl?.header ? tpl.roles?.footnote : undefined;
   const journal = d.docType === '학술지논문';
+  const { xml: header, char, para, note, gap } = buildHeader(tpl?.header ?? HEADER_XML, !!tpl?.header && !footnoteStyle, !!tpl?.header && !journal);
+  const noteRef: NoteRef = footnoteStyle ?? note ?? NOTE_STYLE;
   const ps = journal ? journalParagraphs(d) : thesisParagraphs(d);
-  return { header, section: buildSection(ps, char, para, journal), ps };
+  return { header, section: buildSection(ps, char, para, journal, tpl, noteRef, gap), ps };
 }
 
-/** 학위논문 HWPX 파일 바이트 */
-export function buildThesisHwpx(d: ThesisDoc, now = new Date()): Uint8Array {
+/** 학위논문 HWPX 파일 바이트. tpl: 업로드 양식 (선택) */
+export function buildThesisHwpx(d: ThesisDoc, now = new Date(), tpl?: HwpxTemplate): Uint8Array {
   const enc = new TextEncoder();
-  const { header, section, ps } = thesisXml(d);
+  const { header, section, ps } = thesisXml(d, tpl);
   const iso = now.toISOString().replace(/\.\d+Z$/, 'Z');
   const hpf = SKELETON_FILES['Contents/content.hpf']
     .replace(/<opf:title\/>/, `<opf:title>${esc(d.titleKo)}</opf:title>`)

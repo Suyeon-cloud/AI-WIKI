@@ -4,7 +4,7 @@ import { useStore, useProject } from '../store';
 import SKILL_MD from '../../.claude/skills/hufs-thesis-writing/SKILL.md?raw';
 import JOURNAL_SKILL_MD from '../../.claude/skills/journal-article-writing/SKILL.md?raw';
 import { AI_MODEL_LABEL, AiError, generate } from '../lib/ai';
-import { buildThesisHwpx, sectionsOf, type ThesisDoc } from '../lib/hwpx';
+import { buildThesisHwpx, sectionsOf, type HwpxTemplate, type ThesisDoc } from '../lib/hwpx';
 import { checkBib, formatCitation, segsToText, sortForStyle } from '../lib/citation';
 import { checkCitations, type CiteReport } from '../lib/cite-check';
 import { checkFootnotes } from '../lib/footnotes';
@@ -59,6 +59,8 @@ export function Writing() {
   const [todo, setTodo] = useState<Record<string, string[]>>({});
   const [insightId, setInsightId] = useState('');
   const [length, setLength] = useState(4000);
+  // 업로드 양식 (메모리에만). 없으면 기존 HWPX 출력
+  const [tpl, setTpl] = useState<{ template: HwpxTemplate; label: string } | null>(null);
   const ctrl = useRef<AbortController | null>(null);
 
   const t = thesis;
@@ -243,7 +245,7 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
 
   async function exportHwpx(toDrive: boolean) {
     if (!t!.chapters.length) return toast('목차와 본문을 먼저 작성하세요.', 'info');
-    const bytes = buildThesisHwpx(doc());
+    const bytes = buildThesisHwpx(doc(), new Date(), tpl?.template);
     const label = isJournal ? '학술지논문' : `${project!.degree}학위논문`;
     const name = `${safeFileName(title)}_${label}.hwpx`;
     const blob = new Blob([bytes], { type: 'application/hwp+zip' });
@@ -485,6 +487,7 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
               )}
               <li>참고문헌 {refs.length}건 (APA 7, 국문→외국 문헌 순){missingBib.length > 0 && <span className="warn-tag">서지 미완성 {missingBib.length}건 제외 — <button className="link small" onClick={() => nav.go('references')}>참고문헌에서 보완</button></span>}</li>
               {isJournal ? <li>영문 제목 · Abstract · Keywords · A4 지면, 좌우 3cm, 쪽 번호 아래 가운데</li> : <li>ABSTRACT · 19×26cm 지면, 좌 3cm · 우 2cm, 쪽 번호 아래 가운데</li>}
+              {tpl && <li>양식: {tpl.label}</li>}
             </ol>
             <div className="btn-group">
               <button className="btn btn-primary" onClick={() => exportHwpx(false)} disabled={!!busy}>HWPX 내려받기</button>
@@ -498,7 +501,7 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
                 ? 'AI가 쓴 원고는 초안입니다. 인용·사실관계를 원문과 대조하고, 투고 학술지 규정에 맞게 한글에서 글꼴·여백·분량을 조정한 뒤 투고하세요.'
                 : 'AI가 쓴 원고는 초안입니다. 인용·사실관계를 원문과 대조하고, 한글에서 목차 쪽수와 표지 줄 간격을 확인한 뒤 제출하세요.'}
             </p>
-            <HwpxTemplateCheck />
+            <HwpxTemplateCheck journal={isJournal} onTemplate={setTpl} />
           </Card>
 
           <OutputList kinds={['목차 제안', '집필 초안', '학위논문 HWPX', '학술지논문 HWPX']} title="집필 기록 (AI 결과물)" />

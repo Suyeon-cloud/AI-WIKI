@@ -19,9 +19,9 @@ import { checkCitations, extractCitations, matchCitation } from '../src/lib/cite
 import { normalizeEvent, normalizeThesis } from '../src/lib/projects';
 import { applySaveRecord, changedProjects, eventLabel, formatSave, MAX_EVENTS, parseSave, recordSaves, type SaveChange } from '../src/lib/project-history';
 import { SaveLoop } from '../src/lib/save-loop';
-import { analyzeTemplate, TEMPLATE_LIMITS, TemplateError } from '../src/lib/hwpx-template';
+import { analyzeTemplate, TEMPLATE_LIMITS, TemplateError, toHwpxTemplate } from '../src/lib/hwpx-template';
 import { checkFootnotes, segmentLine, splitNotes } from '../src/lib/footnotes';
-import { buildThesisHwpx, thesisXml, type ThesisDoc } from '../src/lib/hwpx';
+import { buildThesisHwpx, thesisXml, zipStore, type ThesisDoc } from '../src/lib/hwpx';
 import sampleThesis from '../.claude/skills/hufs-thesis-writing/examples/sample-thesis.json';
 import type { AppState, Bib, Material } from '../src/types';
 import obsidianNote from './fixtures/obsidian-real-note.md';
@@ -750,6 +750,137 @@ async function templateTests() {
   await rejects('x.hwpx', await zip([{ name: 'mimetype', data: enc.encode('application/hwp+zip') }, { name: 'Contents/header.xml', data: enc.encode('<html>hello</html>') }]), /HWPX 형식/, 'HWPX 머리말이 아닌 XML 거부');
 }
 
+async function templateOutputTests() {
+  console.log('\n[12] 양식 스타일·쪽 설정을 HWPX 출력에 적용 (가상 양식)');
+  const enc = new TextEncoder();
+  const tplHeader = (opts: { footnote: boolean; borderFill?: boolean }) =>
+    '<?xml version="1.0" encoding="UTF-8"?><hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" version="1.4" secCnt="1"><hh:refList>' +
+    '<hh:fontfaces itemCnt="1"><hh:fontface lang="HANGUL" fontCnt="1"><hh:font id="0" face="함초롬바탕" type="TTF" isEmbedded="0"/></hh:fontface></hh:fontfaces>' +
+    (opts.borderFill === false ? '' : '<hh:borderFills itemCnt="1"><hh:borderFill id="1" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0"/></hh:borderFills>') +
+    '<hh:charProperties itemCnt="3"><hh:charPr id="0" height="1000" textColor="#000000"><hh:fontRef hangul="0"/></hh:charPr><hh:charPr id="5" height="1400" textColor="#000000"><hh:fontRef hangul="0"/></hh:charPr><hh:charPr id="9" height="900" textColor="#000000"><hh:fontRef hangul="0"/></hh:charPr></hh:charProperties>' +
+    '<hh:paraProperties itemCnt="3"><hh:paraPr id="0" tabPrIDRef="0"><hh:align horizontal="JUSTIFY" vertical="BASELINE"/></hh:paraPr><hh:paraPr id="7" tabPrIDRef="0"><hh:align horizontal="CENTER" vertical="BASELINE"/></hh:paraPr><hh:paraPr id="12" tabPrIDRef="0"><hh:align horizontal="JUSTIFY" vertical="BASELINE"/></hh:paraPr></hh:paraProperties>' +
+    '<hh:styles itemCnt="4"><hh:style id="0" type="PARA" name="바탕글" engName="Normal" paraPrIDRef="0" charPrIDRef="0" nextStyleIDRef="0" langID="1042" lockForm="0"/>' +
+    '<hh:style id="3" type="PARA" name="개요 1" engName="Outline 1" paraPrIDRef="7" charPrIDRef="5" nextStyleIDRef="0" langID="1042" lockForm="0"/>' +
+    (opts.footnote ? '<hh:style id="8" type="PARA" name="각주" engName="Footnote" paraPrIDRef="12" charPrIDRef="9" nextStyleIDRef="8" langID="1042" lockForm="0"/>' : '') +
+    '<hh:style id="9" type="PARA" name="참고문헌" engName="" paraPrIDRef="0" charPrIDRef="0" nextStyleIDRef="9" langID="1042" lockForm="0"/></hh:styles></hh:refList></hh:head>';
+  // 한국외대 서식 안내 파일과 같은 150×220mm, 좌우 20·위 20·아래 15mm
+  const tplSection = '<?xml version="1.0" encoding="UTF-8"?><hs:sec xmlns:hs="x" xmlns:hp="y"><hp:p id="0"><hp:run charPrIDRef="0"><hp:secPr id="" outlineShapeIDRef="0" memoShapeIDRef="0" masterPageCnt="0"><hp:pagePr landscape="WIDELY" width="42520" height="62362" gutterType="LEFT_ONLY"><hp:margin header="0" footer="2835" gutter="0" left="5669" right="5669" top="5669" bottom="4252"/></hp:pagePr><hp:footNotePr><hp:autoNumFormat type="DIGIT" suffixChar=")"/></hp:footNotePr></hp:secPr></hp:run></hp:p></hs:sec>';
+  const asFile = (header: string) => zipStore([{ name: 'mimetype', data: enc.encode('application/hwp+zip') }, { name: 'Contents/header.xml', data: enc.encode(header) }, { name: 'Contents/section0.xml', data: enc.encode(tplSection) }]);
+  const doc: ThesisDoc = {
+    ...(sampleThesis as unknown as ThesisDoc),
+    docType: '학위논문',
+    chapters: [
+      { title: 'Ⅰ. 서론', text: '첫 문장이다.[^1]\n## 1. 배경\n본문 둘째 문단.\n[^1]: 첫 각주' },
+      { title: 'Ⅱ. 본론', text: '다음 장.[^1]\n[^1]: 둘째 각주' },
+    ],
+  };
+  const ids = (xml: string, tag: string) => [...xml.matchAll(new RegExp(`<hh:${tag} id="(\\d+)"`, 'g'))].map((m) => m[1]);
+  const refs = (xml: string, attr: string) => [...new Set([...xml.matchAll(new RegExp(`${attr}="(\\d+)"`, 'g'))].map((m) => m[1]))];
+  const paraOf = (section: string, text: string) => section.match(new RegExp(`<hp:p id="\\d+" paraPrIDRef="(\\d+)" styleIDRef="(\\d+)"[^>]*><hp:run charPrIDRef="(\\d+)"><hp:t>${text}`))?.slice(1);
+
+  // 1) 스타일만 적용, 쪽 설정은 기존 유지 (기본값)
+  const a = await analyzeTemplate('양식.hwpx', asFile(tplHeader({ footnote: true })));
+  ok(a.styleApply.ok, '(준비) 가상 양식은 스타일 적용 가능');
+  const t1 = toHwpxTemplate(a, { styles: true, page: false })!;
+  const x1 = thesisXml(doc, t1);
+  const charIds = ids(x1.header, 'charPr');
+  const paraIds = ids(x1.header, 'paraPr');
+  eq([new Set(charIds).size === charIds.length, new Set(paraIds).size === paraIds.length], [true, true], '덧붙인 글자·문단 모양 id가 양식 id와 겹치지 않음');
+  eq([Math.min(...charIds.slice(3).map(Number)), Math.min(...paraIds.slice(3).map(Number))], [10, 13], '새 id는 양식 id 최댓값 다음부터 (불연속 id 대응)');
+  eq([x1.header.match(/<hh:charProperties itemCnt="(\d+)"/)?.[1], x1.header.match(/<hh:paraProperties itemCnt="(\d+)"/)?.[1]], [String(charIds.length), String(paraIds.length)], 'itemCnt가 실제 개수와 일치');
+  ok(refs(x1.section, 'charPrIDRef').every((r) => charIds.includes(r)) && refs(x1.section, 'paraPrIDRef').every((r) => paraIds.includes(r)), '본문의 모든 글자·문단 모양 참조가 header에 있음');
+  ok(refs(x1.section, 'styleIDRef').every((r) => r === '0' || ids(x1.header.replace(/<hh:style /g, '<hh:style- '), 'style-').includes(r) || ['3', '8', '9'].includes(r)), '본문의 스타일 참조가 양식에 있는 스타일');
+  const chapterParas = [...x1.section.matchAll(/<hp:p id="\d+" paraPrIDRef="(\d+)" styleIDRef="(\d+)"[^>]*><hp:run charPrIDRef="(\d+)"><hp:t>Ⅰ\. 서론/g)].map((m) => m.slice(1));
+  eq(chapterParas, [[paraOf(x1.section, 'Ⅰ. 서론')![0], '0', paraOf(x1.section, 'Ⅰ. 서론')![2]], ['7', '3', '5']], '목차의 장 제목은 내장 서식, 본문 장 제목 → 양식 "개요 1" 스타일');
+  eq(paraOf(x1.section, '본문 둘째 문단'), ['0', '0', '0'], '본문 → 양식 "바탕글" 스타일');
+  ok(x1.section.includes('paraPrIDRef="12" styleIDRef="8" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="9"><hp:ctrl><hp:autoNum num="1"'), '각주 → 양식 "각주" 스타일');
+  const cover = paraOf(x1.section, '한국외국어대학교 대학원');
+  ok(!!cover && cover[1] === '0' && paraIds.slice(3).includes(cover[0]) && charIds.slice(3).includes(cover[2]), '표지 문단은 내장 서식 유지');
+  eq(paraOf(x1.section, '1. 배경')?.[1], '0', '연결되지 않은 역할(절 제목)은 내장 서식');
+  ok(x1.section.includes('outlineShapeIDRef="0"'), '양식에 개요 번호가 없으면 구역 설정이 없는 id를 가리키지 않음');
+  ok(x1.section.includes('width="53858" height="73701"'), '쪽 설정을 고르지 않으면 기존 19×26cm 유지');
+  eq((x1.section.match(/<hp:footNote /g) ?? []).length, 2, '각주 2개 유지');
+  eq([(x1.section.match(/<hp:p /g) ?? []).length, (x1.section.match(/<\/hp:p>/g) ?? []).length].reduce((p, c) => p - c), 0, '문단 태그 짝이 맞음');
+  ok(x1.ps.map((p) => p.text).join('|') === thesisXml(doc).ps.map((p) => p.text).join('|'), '본문·표지·참고문헌 내용은 양식 유무와 무관하게 같음');
+
+  // 2) 쪽 설정도 적용 (사용자가 고른 경우)
+  const x2 = thesisXml(doc, toHwpxTemplate(a, { styles: true, page: true }));
+  ok(x2.section.includes('<hp:pagePr landscape="WIDELY" width="42520" height="62362" gutterType="LEFT_ONLY"><hp:margin header="0" footer="2835" gutter="0" left="5669" right="5669" top="5669" bottom="4252"/>'), '쪽 설정을 고르면 양식 용지·여백(150×220mm) 적용');
+  const x3 = thesisXml(doc, toHwpxTemplate(a, { styles: false, page: true }));
+  ok(x3.section.includes('width="42520"') && x3.header === thesisXml(doc).header, '쪽 설정만 고르면 기존 서식(header) 그대로');
+
+  // 3) 양식에 각주 스타일이 없으면 각주 모양을 덧붙여 사용
+  const b = await analyzeTemplate('각주없음.hwpx', asFile(tplHeader({ footnote: false })));
+  const x4 = thesisXml(doc, toHwpxTemplate(b, { styles: true, page: false }));
+  const m4 = x4.section.match(/<hp:subList [^>]*><hp:p id="0" paraPrIDRef="(\d+)" styleIDRef="0" [^>]*><hp:run charPrIDRef="(\d+)">/);
+  ok(!!m4 && ids(x4.header, 'paraPr').includes(m4[1]) && ids(x4.header, 'charPr').includes(m4[2]) && x4.header.includes(`<hh:charPr id="${m4![2]}" height="900"`), '각주 스타일이 없으면 덧붙인 9pt 각주 모양 사용');
+
+  // 4) 적용할 수 없는 양식·아무것도 고르지 않음 → 기존 출력과 바이트 동일
+  const c = await analyzeTemplate('불완전.hwpx', asFile(tplHeader({ footnote: true, borderFill: false })));
+  eq([c.styleApply.ok, toHwpxTemplate(c, { styles: true, page: false })], [false, undefined], '필수 요소가 없는 양식은 스타일 적용 안 함');
+  const when = new Date('2026-01-15T12:00:00Z');
+  const same = (x: Uint8Array, y: Uint8Array) => x.length === y.length && x.every((v, i) => v === y[i]);
+  ok(same(buildThesisHwpx(doc, when, toHwpxTemplate(a, { styles: false, page: false })), buildThesisHwpx(doc, when)), '양식을 골라도 적용 항목이 없으면 기존 출력과 바이트 동일');
+}
+
+async function coverFitTests() {
+  console.log('\n[13] 양식 적용 시 겉표지·속표지 쪽 넘침 방지 (190×260mm 규격 기준 추정)');
+  const enc = new TextEncoder();
+  // 실제 공식 양식처럼 글꼴이 다른 양식 (각주·참고문헌 스타일 없음)
+  const header = '<?xml version="1.0" encoding="UTF-8"?><hh:head xmlns:hh="h" version="1.4" secCnt="1"><hh:refList>' +
+    '<hh:fontfaces itemCnt="1"><hh:fontface lang="HANGUL" fontCnt="1"><hh:font id="0" face="한양신명조" type="TTF" isEmbedded="0"/></hh:fontface></hh:fontfaces>' +
+    '<hh:borderFills itemCnt="1"><hh:borderFill id="1" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0"/></hh:borderFills>' +
+    '<hh:charProperties itemCnt="1"><hh:charPr id="0" height="900" textColor="#000000"><hh:fontRef hangul="0"/></hh:charPr></hh:charProperties>' +
+    '<hh:paraProperties itemCnt="1"><hh:paraPr id="0" tabPrIDRef="0"><hh:align horizontal="CENTER" vertical="BASELINE"/></hh:paraPr></hh:paraProperties>' +
+    '<hh:styles itemCnt="1"><hh:style id="0" type="PARA" name="바탕글" engName="Normal" paraPrIDRef="0" charPrIDRef="0" nextStyleIDRef="0" langID="1042" lockForm="0"/></hh:styles></hh:refList></hh:head>';
+  const section = '<?xml version="1.0" encoding="UTF-8"?><hs:sec xmlns:hs="x" xmlns:hp="y"><hp:p id="0"><hp:run charPrIDRef="0"><hp:secPr id=""><hp:pagePr landscape="WIDELY" width="42520" height="62362" gutterType="LEFT_ONLY"><hp:margin header="0" footer="2835" gutter="0" left="5669" right="5669" top="5669" bottom="4252"/></hp:pagePr><hp:footNotePr><hp:autoNumFormat type="DIGIT" suffixChar=")"/></hp:footNotePr></hp:secPr></hp:run></hp:p></hs:sec>';
+  const a = await analyzeTemplate('양식.hwpx', zipStore([{ name: 'mimetype', data: enc.encode('application/hwp+zip') }, { name: 'Contents/header.xml', data: enc.encode(header) }, { name: 'Contents/section0.xml', data: enc.encode(section) }]));
+  const tpl = toHwpxTemplate(a, { styles: true, page: false });
+
+  /** 쪽별 세로 길이 추정 (mm): 줄 간격 160%, 한글·한자 1em·그 밖 0.5em, 양식 글꼴은 10% 넓게, 본문 폭 140mm */
+  const pages = (x: { header: string; section: string }, widthFactor: number) => {
+    const size = new Map([...x.header.matchAll(/<hh:charPr id="(\d+)" height="(\d+)"/g)].map((m) => [m[1], Number(m[2]) / 100]));
+    const ps = [...x.section.matchAll(/<hp:p id="\d+" paraPrIDRef="\d+" styleIDRef="\d+" pageBreak="(\d)"[^>]*><hp:run charPrIDRef="(\d+)">(?:<hp:t>([^<]*)<\/hp:t>|<hp:t\/>)/g)];
+    const out: number[] = [];
+    for (const [, pb, c, t] of ps) {
+      if (pb === '1' || !out.length) out.push(0);
+      const pt = size.get(c) ?? 10;
+      const em = [...(t ?? '')].reduce((n, ch) => n + (/[가-힣㐀-鿿]/.test(ch) ? 1 : 0.5), 0);
+      const lines = Math.max(1, Math.ceil((em * pt * 0.3528 * widthFactor) / 140));
+      out[out.length - 1] += lines * pt * 1.6 * 0.3528;
+    }
+    return out;
+  };
+  const BODY = 260 - 35 - 30; // 190×260mm 규격: 위 30+머리말 5, 아래 15+꼬리말 15
+  const base = { ...(sampleThesis as unknown as ThesisDoc), docType: '학위논문' as const };
+  const long = { ...base, titleKo: '생성형 인공지능을 활용한 한중 문화콘텐츠 기반 모션그래픽 교육 프로그램의 설계와 효과에 관한 실증적 연구', subtitle: '중국 드라마 속 언어와 문화 요소를 중심으로 한 대학 중국어 교육 현장 적용과 학습자 인식 분석' };
+  eq([long.titleKo.length >= 55, long.subtitle.length >= 45], [true, true], '(준비) 긴 제목·부제목');
+
+  const plain = pages(thesisXml(base), 1);
+  // 참고: 양식이 없을 때의 기존 출력은 바꾸지 않는다 (바이트 동일 유지). 추정치만 기록한다.
+  console.log(`        참고: 기존 출력(양식 없음) 겉표지 추정 ${plain[0].toFixed(1)}mm / 규격 ${BODY}mm`);
+  for (const [label, doc] of [['예시 제목', base], ['긴 제목·부제목', long]] as const) {
+    const p = pages(thesisXml(doc, tpl), 1.1);
+    ok(p[0] <= BODY - 8 && p[1] <= BODY - 8, `양식 적용 ${label}: 겉표지 ${p[0].toFixed(1)}mm·속표지 ${p[1].toFixed(1)}mm가 ${BODY}mm 안에 한 줄 이상 여유`);
+  }
+
+  const x = thesisXml(long, tpl);
+  const gapId = x.header.match(/<hh:charPr id="(\d+)" height="800"/g)?.slice(-1)[0]?.match(/id="(\d+)"/)?.[1];
+  const firstTwo = x.section.split('pageBreak="1"').slice(0, 2).join('');
+  const gapParas = [...firstTwo.matchAll(new RegExp(`<hp:run charPrIDRef="${gapId}">(<hp:t\\/>|<hp:t>[^<]*</hp:t>)`, 'g'))];
+  eq([gapParas.length, gapParas.every((m) => m[1] === '<hp:t/>')], [34, true], '겉표지·속표지의 빈 줄 34개만 8pt로 (글자가 있는 줄은 그대로)');
+  ok(x.section.includes(`<hp:t>${long.titleKo}</hp:t>`) && x.section.includes(`<hp:t>-${long.subtitle}-</hp:t>`), '제목·부제목 그대로');
+  eq((x.section.match(new RegExp(`charPrIDRef="${gapId}"`, 'g')) ?? []).length, 34, '심사청구서·인정서·본문·참고문헌의 줄에는 적용하지 않음');
+  eq(thesisXml(long, tpl).ps.map((p) => p.text), thesisXml(long).ps.map((p) => p.text), '쪽 순서와 내용은 양식 유무와 같음');
+
+  const j = thesisXml({ ...long, docType: '학술지논문' }, tpl);
+  const count = (h: string) => (h.match(/<hh:charPr /g) ?? []).length;
+  eq(count(j.header), count(x.header) - 1, '학술지 출력에는 표지 빈 줄용 글자 모양을 추가하지 않음');
+  const when = new Date('2026-01-15T12:00:00Z');
+  const same = (u: Uint8Array, v: Uint8Array) => u.length === v.length && u.every((b, i) => b === v[i]);
+  ok(same(buildThesisHwpx(long, when), buildThesisHwpx(long, when, undefined)), '양식 미선택 출력은 변화 없음');
+}
+
 (async () => {
   await storageTests();
   await backupTests();
@@ -762,6 +893,8 @@ async function templateTests() {
   saveHistoryTests();
   await saveLoopTests();
   await templateTests();
+  await templateOutputTests();
+  await coverFitTests();
   console.log(`\n${failed ? '실패' : '모두 통과'}: ${passed}건 통과, ${failed}건 실패`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => {

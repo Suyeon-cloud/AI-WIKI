@@ -6,6 +6,8 @@
  * - XML은 DOCTYPE/ENTITY를 거부하고(외부 엔티티·엔티티 폭탄 차단), 정규식으로 필요한 속성만 읽는다.
  */
 
+import type { HwpxTemplate } from './hwpx';
+
 export const TEMPLATE_LIMITS = {
   fileBytes: 5 * 1024 * 1024, // 업로드 파일 최대 5MB
   entries: 200, // ZIP 항목 수
@@ -117,6 +119,12 @@ const ROLE_NAMES: Record<TemplateRole, string[]> = {
 };
 export interface RoleMapping { role: TemplateRole; label: string; style: TemplateStyle | null }
 export interface TemplateAnalysis {
+  /** 출력에 쓸 양식 header.xml (검증을 통과한 원문, 메모리에만 보관) */
+  header: string;
+  /** 스타일 적용 가능 여부와 불가 사유 */
+  styleApply: { ok: boolean; reasons: string[] };
+  /** 쪽 설정 숫자값 (HWPUNIT). 읽을 수 없으면 null */
+  pageRaw: HwpxTemplate['page'] | null;
   fileName: string;
   fileBytes: number;
   counts: { styles: number; charPr: number; paraPr: number; fontfaces: number; entries: number };
@@ -140,12 +148,22 @@ export function analyzeXml(header: string, section: string | null): Omit<Templat
   const broken = styles.filter((s) => !s.refsOk);
   if (broken.length) warnings.push(`글자·문단 모양 참조가 맞지 않는 스타일 ${broken.length}개는 연결에서 제외합니다: ${broken.map((s) => s.name || s.engName).join(', ')}`);
   const norm = (s: string) => s.trim().toLowerCase();
-  const usable = styles.filter((s) => s.type === 'PARA' && s.refsOk);
+  const usable = styles.filter((s) => s.type === 'PARA' && s.refsOk && /^\d+$/.test(s.id));
   const mapping: RoleMapping[] = (Object.keys(ROLE_NAMES) as TemplateRole[]).map((role) => {
     const style = ROLE_NAMES[role].map((n) => usable.find((s) => norm(s.name) === norm(n) || norm(s.engName) === norm(n))).find(Boolean) ?? null;
     return { role, label: ROLE_LABEL[role], style };
   });
 
+  // 출력에 양식 header를 쓰려면: 모양 목록과 기본(0번) 모양, 구역 설정이 가리키는 테두리(1번)가 있어야 한다
+  const reasons: string[] = [];
+  if (!/<hh:charProperties itemCnt="\d+">[\s\S]*<\/hh:charProperties>/.test(header)) reasons.push('글자 모양 목록이 없습니다');
+  if (!/<hh:paraProperties itemCnt="\d+">[\s\S]*<\/hh:paraProperties>/.test(header)) reasons.push('문단 모양 목록이 없습니다');
+  if (!/<hh:charPr id="0"[\s\S]*?<\/hh:charPr>/.test(header)) reasons.push('기본 글자 모양(0번)이 없습니다');
+  if (!/<hh:paraPr id="0"[\s\S]*?<\/hh:paraPr>/.test(header)) reasons.push('기본 문단 모양(0번)이 없습니다');
+  if (!/<hh:borderFill id="1"/.test(header)) reasons.push('기본 테두리(1번)가 없습니다');
+  if (reasons.length) warnings.push(`이 양식은 스타일을 출력에 적용할 수 없습니다: ${reasons.join(', ')}`);
+
+  let pageRaw: TemplateAnalysis['pageRaw'] = null;
   let page: TemplateAnalysis['page'] = null;
   let footnote: TemplateAnalysis['footnote'] = null;
   if (section) {
@@ -156,6 +174,12 @@ export function analyzeXml(header: string, section: string | null): Omit<Templat
       const a = attrs(pagePr);
       const m = margin ? attrs(margin) : {};
       page = { widthMm: mm(a.width), heightMm: mm(a.height), landscape: a.landscape ?? null, margins: Object.fromEntries(['left', 'right', 'top', 'bottom', 'header', 'footer'].map((k) => [k, mm(m[k])])) };
+      const keys = ['header', 'footer', 'gutter', 'left', 'right', 'top', 'bottom'] as const;
+      const num = (v: string | undefined) => (v && /^\d{1,6}$/.test(v) ? Number(v) : NaN);
+      const margins = Object.fromEntries(keys.map((k) => [k, num(m[k] ?? '0')])) as Record<(typeof keys)[number], number>;
+      if ((a.landscape === 'WIDELY' || a.landscape === 'NARROWLY') && num(a.width) > 0 && num(a.height) > 0 && keys.every((k) => Number.isFinite(margins[k])))
+        pageRaw = { landscape: a.landscape, width: num(a.width), height: num(a.height), margin: margins };
+      else warnings.push('쪽 설정 값을 해석하지 못해 쪽 설정은 적용할 수 없습니다.');
     } else warnings.push('쪽 설정(용지·여백)을 찾지 못했습니다. 내장 쪽 설정을 사용합니다.');
     const fn = section.match(/<hp:footNotePr>[\s\S]*?<\/hp:footNotePr>/)?.[0];
     const fmt = fn?.match(/<hp:autoNumFormat\s[^>]*\/>/)?.[0];
@@ -163,7 +187,7 @@ export function analyzeXml(header: string, section: string | null): Omit<Templat
     else warnings.push('각주 번호 설정을 찾지 못했습니다. 내장 각주 설정을 사용합니다.');
   } else warnings.push('Contents/section0.xml이 없어 쪽 설정을 읽지 못했습니다.');
 
-  return { styles, mapping, page, footnote, warnings, counts: { styles: styles.length, charPr: charIds.size, paraPr: paraIds.size, fontfaces: (header.match(/<hh:fontface\s/g) ?? []).length } };
+  return { header, styleApply: { ok: !reasons.length, reasons }, pageRaw, styles, mapping, page, footnote, warnings, counts: { styles: styles.length, charPr: charIds.size, paraPr: paraIds.size, fontfaces: (header.match(/<hh:fontface\s/g) ?? []).length } };
 }
 
 /** 업로드한 .hwpx 분석 (메모리에서만) */
@@ -183,4 +207,15 @@ export async function analyzeTemplate(fileName: string, bytes: Uint8Array): Prom
   const section = sectionEntry ? safeXml(await readZipEntry(bytes, sectionEntry), 'section0.xml') : null;
   const r = analyzeXml(header, section);
   return { ...r, fileName, fileBytes: bytes.length, counts: { ...r.counts, entries: entries.length } };
+}
+
+/** 분석 결과 → 출력용 양식. 고른 항목만 넣고, 아무것도 고르지 않으면 undefined (기존 출력) */
+export function toHwpxTemplate(a: TemplateAnalysis, opts: { styles: boolean; page: boolean }): HwpxTemplate | undefined {
+  const t: HwpxTemplate = {};
+  if (opts.styles && a.styleApply.ok) {
+    t.header = a.header;
+    t.roles = Object.fromEntries(a.mapping.filter((m) => m.style).map((m) => [m.role, { style: m.style!.id, para: m.style!.paraPrIDRef, char: m.style!.charPrIDRef }]));
+  }
+  if (opts.page && a.pageRaw) t.page = a.pageRaw;
+  return t.header || t.page ? t : undefined;
 }

@@ -751,3 +751,6 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 .template-check input[type="file"] { margin: 6px 0; max-width: 100%; }
 .template-result { margin-top: 8px; }
 .template-map td { word-break: keep-all; overflow-wrap: anywhere; }
+
+.template-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.template-opt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 4px; }
