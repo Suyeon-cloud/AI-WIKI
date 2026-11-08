@@ -19,6 +19,7 @@ import { checkCitations, extractCitations, matchCitation } from '../src/lib/cite
 import { normalizeEvent, normalizeThesis } from '../src/lib/projects';
 import { applySaveRecord, changedProjects, eventLabel, formatSave, MAX_EVENTS, parseSave, recordSaves, type SaveChange } from '../src/lib/project-history';
 import { SaveLoop } from '../src/lib/save-loop';
+import { analyzeTemplate, TEMPLATE_LIMITS, TemplateError } from '../src/lib/hwpx-template';
 import { checkFootnotes, segmentLine, splitNotes } from '../src/lib/footnotes';
 import { buildThesisHwpx, thesisXml, type ThesisDoc } from '../src/lib/hwpx';
 import sampleThesis from '../.claude/skills/hufs-thesis-writing/examples/sample-thesis.json';
@@ -663,6 +664,92 @@ async function saveLoopTests() {
   }
 }
 
+async function templateTests() {
+  console.log('\n[11] 양식 HWPX 분석 (가상 파일: 정상·오류·악성 입력)');
+  const enc = new TextEncoder();
+  const deflate = async (data: Uint8Array) => {
+    const s = new Blob([data]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(s).arrayBuffer());
+  };
+  type Ent = { name: string; data: Uint8Array; deflate?: boolean; size?: number; flags?: number };
+  /** 시험용 ZIP 작성기: 크기·플래그를 일부러 틀리게 넣을 수 있다 */
+  const zip = async (ents: Ent[]) => {
+    const locals: Uint8Array[] = [];
+    const centrals: Uint8Array[] = [];
+    let offset = 0;
+    for (const e of ents) {
+      const body = e.deflate ? await deflate(e.data) : e.data;
+      const name = enc.encode(e.name);
+      const size = e.size ?? e.data.length;
+      const lh = new Uint8Array(30 + name.length);
+      const dv = new DataView(lh.buffer);
+      dv.setUint32(0, 0x04034b50, true); dv.setUint16(6, e.flags ?? 0, true); dv.setUint16(8, e.deflate ? 8 : 0, true);
+      dv.setUint32(18, body.length, true); dv.setUint32(22, size, true); dv.setUint16(26, name.length, true); lh.set(name, 30);
+      const ch = new Uint8Array(46 + name.length);
+      const cv = new DataView(ch.buffer);
+      cv.setUint32(0, 0x02014b50, true); cv.setUint16(8, e.flags ?? 0, true); cv.setUint16(10, e.deflate ? 8 : 0, true);
+      cv.setUint32(20, body.length, true); cv.setUint32(24, size, true); cv.setUint16(28, name.length, true); cv.setUint32(42, offset, true); ch.set(name, 46);
+      locals.push(lh, body); centrals.push(ch);
+      offset += lh.length + body.length;
+    }
+    const cdSize = centrals.reduce((n, c) => n + c.length, 0);
+    const end = new Uint8Array(22);
+    const ev = new DataView(end.buffer);
+    ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, ents.length, true); ev.setUint16(10, ents.length, true); ev.setUint32(12, cdSize, true); ev.setUint32(16, offset, true);
+    const parts = [...locals, ...centrals, end];
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let o = 0;
+    for (const p of parts) { out.set(p, o); o += p.length; }
+    return out;
+  };
+  const rejects = async (name: string, bytes: Uint8Array, pattern: RegExp, msg: string) => {
+    try { await analyzeTemplate(name, bytes); ok(false, msg, '오류가 나지 않음'); }
+    catch (e) { ok(e instanceof TemplateError && pattern.test(e.message), msg, e instanceof Error ? e.message : String(e)); }
+  };
+
+  // 정상: 이 앱이 만든 학위논문 HWPX(한글에서 열리는 형식)를 양식으로 사용
+  const thesis = buildThesisHwpx({ ...(sampleThesis as unknown as ThesisDoc), docType: '학위논문' }, new Date('2026-01-15T12:00:00Z'));
+  const a = await analyzeTemplate('학위논문 양식.hwpx', thesis);
+  eq(a.mapping.map((m) => [m.role, m.style?.engName ?? null]), [['chapter', 'Outline 1'], ['section', 'Outline 2'], ['subsection', 'Outline 3'], ['body', 'Body'], ['reference', null], ['footnote', 'Footnote']], '스타일 자동 연결 (참고문헌 스타일이 없으면 내장 서식 대체)');
+  eq([a.page?.widthMm, a.page?.heightMm, a.page?.margins.left, a.page?.margins.right], [190, 260, 30, 20], '쪽 설정 읽기 (19×26cm, 좌 30·우 20mm)');
+  eq(a.footnote, { numberType: 'DIGIT', suffix: ')' }, '각주 번호 설정 읽기');
+  ok(a.counts.styles > 10 && a.counts.charPr > 0 && a.counts.paraPr > 0 && a.styles.every((s) => s.refsOk), '스타일·글자·문단 모양 수와 참조 확인');
+
+  // 정상: 압축(deflate)된 HWPX도 같은 결과
+  const files = new Map<string, Uint8Array>();
+  const { header, section } = thesisXml({ ...(sampleThesis as unknown as ThesisDoc), docType: '학술지논문' });
+  files.set('mimetype', enc.encode('application/hwp+zip'));
+  const deflated = await zip([{ name: 'mimetype', data: files.get('mimetype')! }, { name: 'Contents/header.xml', data: enc.encode(header), deflate: true }, { name: 'Contents/section0.xml', data: enc.encode(section), deflate: true }]);
+  const b = await analyzeTemplate('학술지 양식.hwpx', deflated);
+  eq([b.page?.widthMm, b.page?.heightMm, b.mapping.filter((m) => m.style).length], [210, 297, 5], '압축된 양식도 읽기 (A4, 연결 5개)');
+
+  // 이름이 한글뿐인 양식 + 참고문헌 스타일 있음 + 참조가 틀린 스타일
+  const hdr = (styles: string) => `<?xml version="1.0" encoding="UTF-8"?><hh:head xmlns:hh="x"><hh:fontfaces><hh:fontface lang="HANGUL"/></hh:fontfaces><hh:charProperties itemCnt="1"><hh:charPr id="0" height="1000"/></hh:charProperties><hh:paraProperties itemCnt="2"><hh:paraPr id="0"/><hh:paraPr id="1"/></hh:paraProperties><hh:styles>${styles}</hh:styles></hh:head>`;
+  const sec = '<hs:sec xmlns:hs="x"><hp:secPr><hp:pagePr landscape="WIDELY" width="59528" height="84186"><hp:margin header="4252" footer="4252" gutter="0" left="8504" right="8504" top="5668" bottom="4252"/></hp:pagePr><hp:footNotePr><hp:autoNumFormat type="DIGIT" suffixChar=")"/></hp:footNotePr></hp:secPr></hs:sec>';
+  const ko = await zip([{ name: 'mimetype', data: enc.encode('application/hwp+zip') }, { name: 'Contents/header.xml', data: enc.encode(hdr('<hh:style id="0" type="PARA" name="바탕글" paraPrIDRef="0" charPrIDRef="0"/><hh:style id="1" type="PARA" name="참고문헌" paraPrIDRef="1" charPrIDRef="0"/><hh:style id="2" type="PARA" name="개요 1" paraPrIDRef="9" charPrIDRef="0"/><hh:style id="3" type="PARA" name="R&amp;D 주석" paraPrIDRef="0" charPrIDRef="0"/>')) }, { name: 'Contents/section0.xml', data: enc.encode(sec) }]);
+  const c = await analyzeTemplate('ko.hwpx', ko);
+  eq(c.mapping.map((m) => [m.role, m.style?.name ?? null]), [['chapter', null], ['section', null], ['subsection', null], ['body', '바탕글'], ['reference', '참고문헌'], ['footnote', null]], '한글 이름 연결, 참조가 틀린 스타일은 연결하지 않음');
+  ok(c.warnings.some((w) => w.includes('개요 1')) && c.styles.some((s) => s.name === 'R&D 주석'), '참조 오류 경고, XML 엔티티는 글자로 해석');
+  eq([c.page?.widthMm, c.page?.heightMm], [210, 297], '쪽 크기 HWPUNIT → mm 변환');
+
+  // 오류·악성 입력
+  await rejects('양식.docx', thesis, /\.hwpx 파일만/, '.hwpx가 아닌 확장자 거부');
+  await rejects('큰.hwpx', new Uint8Array(TEMPLATE_LIMITS.fileBytes + 1), /5MB/, '5MB 초과 거부');
+  await rejects('가짜.hwpx', enc.encode('이건 ZIP이 아닙니다'.repeat(10)), /ZIP/, 'ZIP이 아닌 파일 거부');
+  await rejects('m.hwpx', await zip([{ name: 'Contents/header.xml', data: enc.encode(header) }]), /mimetype/, 'mimetype 없음 거부');
+  await rejects('m2.hwpx', await zip([{ name: 'mimetype', data: enc.encode('application/zip') }]), /mimetype 불일치/, 'HWPX가 아닌 mimetype 거부');
+  await rejects('h.hwpx', await zip([{ name: 'mimetype', data: enc.encode('application/hwp+zip') }]), /header\.xml/, 'header.xml 없음 거부');
+  await rejects('t.hwpx', await zip([{ name: '../evil.xml', data: enc.encode('x') }]), /경로/, '상위 폴더 경로(../) 항목 거부');
+  await rejects('e.hwpx', await zip([{ name: 'mimetype', data: enc.encode('application/hwp+zip'), flags: 1 }]), /암호화/, '암호화 항목 거부');
+  await rejects('d.hwpx', await zip([{ name: 'mimetype', data: enc.encode('application/hwp+zip') }, { name: 'Contents/header.xml', data: enc.encode('<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaa">]><hh:head>&a;</hh:head>') }]), /DOCTYPE|ENTITY/, 'DOCTYPE·ENTITY(엔티티 폭탄·외부 엔티티) 거부');
+  await rejects('r.hwpx', await zip([{ name: 'mimetype', data: enc.encode('application/hwp+zip') }, { name: 'Contents/header.xml', data: enc.encode('<hh:head/>'), size: 5_000_000 }]), /압축률|크기/, '선언 크기 대비 비정상 압축률 거부');
+  await rejects('b.hwpx', await zip([{ name: 'mimetype', data: enc.encode('application/hwp+zip') }, { name: 'Contents/header.xml', data: new Uint8Array(TEMPLATE_LIMITS.xmlBytes + 1024), deflate: true, size: 50_000 }]), /압축을 푼 크기|실제 크기/, '선언보다 크게 풀리는 압축 폭탄 거부');
+  await rejects('s.hwpx', await zip([{ name: 'mimetype', data: enc.encode('application/hwp+zip') }, { name: 'Contents/header.xml', data: enc.encode('<hh:head/>'), size: 3 }]), /실제 크기/, '선언 크기와 실제 크기 불일치 거부');
+  await rejects('n.hwpx', await zip(Array.from({ length: TEMPLATE_LIMITS.entries + 1 }, (_, i) => ({ name: `f${i}.txt`, data: enc.encode('x') }))), /항목이 너무 많/, '항목 수 초과 거부');
+  await rejects('u.hwpx', await zip([{ name: 'mimetype', data: enc.encode('application/hwp+zip') }, { name: 'Contents/header.xml', data: new Uint8Array([0x3c, 0xff, 0xfe, 0x3e]) }]), /UTF-8/, '잘못된 UTF-8 거부');
+  await rejects('x.hwpx', await zip([{ name: 'mimetype', data: enc.encode('application/hwp+zip') }, { name: 'Contents/header.xml', data: enc.encode('<html>hello</html>') }]), /HWPX 형식/, 'HWPX 머리말이 아닌 XML 거부');
+}
+
 (async () => {
   await storageTests();
   await backupTests();
@@ -674,6 +761,7 @@ async function saveLoopTests() {
   await footnoteTests();
   saveHistoryTests();
   await saveLoopTests();
+  await templateTests();
   console.log(`\n${failed ? '실패' : '모두 통과'}: ${passed}건 통과, ${failed}건 실패`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => {

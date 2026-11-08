@@ -15,6 +15,7 @@ import { Card, Empty, NeedProject, PageHeader, StatusBadge } from '../components
 import { OutputList } from '../components/Outputs';
 import { useNav } from '../components/ProjectDialog';
 import { useConnections } from '../components/Sidebar';
+import { HwpxTemplateCheck } from '../components/HwpxTemplateCheck';
 
 /** 스킬 파일의 frontmatter를 뺀 본문 = AI 집필 시스템 지침 */
 const SKILL = SKILL_MD.replace(/^---[\s\S]*?---\s*/, '');
@@ -497,6 +498,7 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
                 ? 'AI가 쓴 원고는 초안입니다. 인용·사실관계를 원문과 대조하고, 투고 학술지 규정에 맞게 한글에서 글꼴·여백·분량을 조정한 뒤 투고하세요.'
                 : 'AI가 쓴 원고는 초안입니다. 인용·사실관계를 원문과 대조하고, 한글에서 목차 쪽수와 표지 줄 간격을 확인한 뒤 제출하세요.'}
             </p>
+            <HwpxTemplateCheck />
           </Card>
 
           <OutputList kinds={['목차 제안', '집필 초안', '학위논문 HWPX', '학술지논문 HWPX']} title="집필 기록 (AI 결과물)" />

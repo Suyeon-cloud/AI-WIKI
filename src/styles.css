@@ -744,3 +744,10 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 .cite-check ul { margin: 6px 0; padding-left: 18px; line-height: 1.7; word-break: keep-all; }
 
 .footnote-example { margin: 6px 0 10px; padding: 8px 10px; background: #faf9f6; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; white-space: pre-wrap; }
+
+/* AI 집필 — 양식 HWPX 분석 (1단계) */
+.template-check { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; }
+.template-check summary { cursor: pointer; font-weight: 600; }
+.template-check input[type="file"] { margin: 6px 0; max-width: 100%; }
+.template-result { margin-top: 8px; }
+.template-map td { word-break: keep-all; overflow-wrap: anywhere; }
