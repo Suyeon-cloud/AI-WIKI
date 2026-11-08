@@ -673,6 +673,8 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 
 .cloud-save-banner { position: fixed; bottom: 12px; right: 16px; z-index: 80; padding: 8px 14px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #334155; font-size: 12px; max-width: min(640px, 90vw); box-shadow: 0 2px 10px #0001; }
 .cloud-save-error { background: #fff1f2; border-color: #fda4af; color: #9f1239; }
+.cloud-save-pending { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+.cloud-save-done { color: #166534; }
 
 /* ───────── KCI 논문 검색 ───────── */
 .kci-search-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

@@ -224,6 +224,7 @@ function CloudStore({ children, engine, boot }: { children: ReactNode; engine: C
   const [state, rawDispatch] = useReducer(reducer, boot);
   const [edits, setEdits] = useState(0);
   const [saved, setSaved] = useState(0);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [storageError, setStorageError] = useState<string | null>(null);
@@ -268,7 +269,10 @@ function CloudStore({ children, engine, boot }: { children: ReactNode; engine: C
           await engine.save(state);
           await draftQueue.current.catch(() => undefined);
           await clearRecovery(draftKey, edits).catch(() => undefined);
-          if (mounted.current) setSaved((x) => Math.max(x, edits));
+          if (mounted.current) {
+            setSaved((x) => Math.max(x, edits));
+            setSavedAt(new Date().toLocaleTimeString('ko-KR'));
+          }
         } catch (e) {
           failed.current = true;
           if (mounted.current) setStorageError(e instanceof Error ? e.message : '저장하지 못했습니다.');
@@ -279,8 +283,13 @@ function CloudStore({ children, engine, boot }: { children: ReactNode; engine: C
   }, [engine, state, edits, retry, draftKey]);
   const backup = () => downloadFile(`ai-wiki-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(buildBackup(state), null, 2), 'application/json');
   return <StoreContext.Provider value={{ state, dispatch, toast, toasts, storageError, pendingSave, saveBlocked: !!storageError, resumeSave }}>
-    <div className={`cloud-save-banner ${storageError ? 'cloud-save-error' : ''}`} role="status">
-      {storageError ? <>{storageError} <button className="btn btn-sm" onClick={backup}>현재 내용 백업</button> <button className="btn btn-sm" onClick={resumeSave}>저장 다시 시도</button></> : pendingSave ? 'Supabase에 저장 중… 창을 닫지 마세요.' : '내 계정의 Supabase에 저장됨'}
+    <div className={`cloud-save-banner ${storageError ? 'cloud-save-error' : pendingSave ? 'cloud-save-pending' : 'cloud-save-done'}`} role={storageError ? 'alert' : 'status'}>
+      {storageError ? <>
+        <b>저장 실패: 최근 변경 내용은 서버에 저장되지 않았습니다.</b> {storageError}
+        <br />변경 내용은 이 브라우저의 복구 사본에 남아 있으며 자동으로 지우지 않습니다. 새로고침하거나 창을 닫기 전에 "현재 내용 백업"을 받아 두세요.
+        <br /><button className="btn btn-sm" onClick={backup}>현재 내용 백업</button> <button className="btn btn-sm" onClick={resumeSave}>저장 다시 시도</button>
+      </> : pendingSave ? <><b>저장 중…</b> 완료 표시 전에 새로고침하거나 창을 닫으면 이번 변경은 서버에 저장되지 않습니다.</>
+        : <><b>저장 완료</b> 내 계정의 Supabase에 저장됨{savedAt && ` · ${savedAt}`}</>}
     </div>
     {children}
   </StoreContext.Provider>;
