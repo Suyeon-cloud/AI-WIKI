@@ -12,6 +12,7 @@
  * 줄 배치 정보(linesegarray)는 넣지 않아 한글이 열 때 다시 계산한다.
  */
 import { COL_PR, HEADER_XML, SECTION_OPEN, SEC_PR, SKELETON_FILES } from './hwpx-skeleton';
+import { hasFootnoteSyntax, segmentLine, splitNotes, stripMarks, type NoteSeg } from './footnotes';
 
 export interface ThesisDoc {
   degree: '석사' | '박사';
@@ -131,7 +132,20 @@ interface Para {
   char: CharKey;
   para: ParaKey;
   pageBreak?: boolean;
+  runs?: NoteSeg[]; // 각주가 있는 문단만: 글자/각주 조각 (text는 각주 표시를 뺀 글자)
 }
+
+/**
+ * 한글 각주 객체. 한글로 각주를 넣어 저장한 문서의 구조를 따른다.
+ * 내용 문단은 골격(header.xml)의 '각주' 스타일(id 15 → 문단 모양 10, 글자 모양 3)을 쓴다.
+ */
+const NOTE_STYLE = { style: 15, para: 10, char: 3 };
+const noteXml = (n: number, text: string) =>
+  `<hp:ctrl><hp:footNote number="${n}" suffixChar="41" instId="${1000000000 + n}">` +
+  '<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">' +
+  `<hp:p id="0" paraPrIDRef="${NOTE_STYLE.para}" styleIDRef="${NOTE_STYLE.style}" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="${NOTE_STYLE.char}">` +
+  `<hp:ctrl><hp:autoNum num="${n}" numType="FOOTNOTE"><hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/></hp:autoNum></hp:ctrl>` +
+  `<hp:t> ${esc(text)}</hp:t></hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl>`;
 
 /** 표지용 글자 사이 띄우기: '홍길동' → '홍   길   동' */
 const spaced = (s: string, gap = '   ') => (/^[가-힣]{2,4}$/.test(s.trim()) ? [...s.trim()].join(gap) : s);
@@ -191,16 +205,23 @@ function front(d: ThesisDoc): Para[] {
   return out;
 }
 
-/** 본문 텍스트 → 문단: '## ' 절 제목, '### ' 항 제목, 빈 줄은 무시 */
+/** 본문 텍스트 → 문단: '## ' 절 제목, '### ' 항 제목, 빈 줄은 무시. '[^1]' 각주 표시와 '[^1]: 내용' 정의를 처리한다 */
 function bodyParas(text: string): Para[] {
+  const notes = hasFootnoteSyntax(text) ? splitNotes(text) : null;
   const out: Para[] = [];
-  for (const raw of text.split(/\r?\n/)) {
+  for (const raw of (notes ? notes.body : text).split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
-    if (line.startsWith('### ')) out.push({ text: line.slice(4).trim(), char: 'bold', para: 'left' });
-    else if (line.startsWith('## ')) out.push({ text: line.slice(3).trim(), char: 'section', para: 'section' });
-    else if (line.startsWith('# ')) out.push({ text: line.slice(2).trim(), char: 'chapter', para: 'chapter' });
-    else out.push({ text: line.replace(/\*\*(.+?)\*\*/g, '$1'), char: 'body', para: 'body' });
+    let p: Para;
+    if (line.startsWith('### ')) p = { text: line.slice(4).trim(), char: 'bold', para: 'left' };
+    else if (line.startsWith('## ')) p = { text: line.slice(3).trim(), char: 'section', para: 'section' };
+    else if (line.startsWith('# ')) p = { text: line.slice(2).trim(), char: 'chapter', para: 'chapter' };
+    else p = { text: line.replace(/\*\*(.+?)\*\*/g, '$1'), char: 'body', para: 'body' };
+    if (notes) {
+      const runs = segmentLine(p.text, notes.defs);
+      if (runs.some((r) => 'note' in r)) p = { ...p, text: runs.map((r) => ('text' in r ? r.text : '')).join(''), runs };
+    }
+    out.push(p);
   }
   return out;
 }
@@ -210,7 +231,7 @@ export const sectionsOf = (text: string) =>
   text
     .split(/\r?\n/)
     .filter((l) => /^##\s+/.test(l.trim()) && !/^###/.test(l.trim()))
-    .map((l) => l.trim().replace(/^##\s+/, ''));
+    .map((l) => stripMarks(l.trim().replace(/^##\s+/, '')));
 
 export function thesisParagraphs(d: ThesisDoc): Para[] {
   const ps: Para[] = front(d);
@@ -290,10 +311,17 @@ function buildSection(ps: Para[], char: Record<CharKey, number>, para: Record<Pa
   );
   const pageNum = '<hp:ctrl><hp:pageNum pos="BOTTOM_CENTER" formatType="DIGIT" sideChar="-"/></hp:ctrl>';
   const first = `<hp:p id="0" paraPrIDRef="${para.center}" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="${char.info}">${secPr}${COL_PR}${pageNum}</hp:run><hp:run charPrIDRef="${char.info}"><hp:t/></hp:run></hp:p>`;
+  // 각주 번호는 문서 순서대로 1부터 이어진다
+  let noteNo = 0;
+  const runXml = (p: Para) => {
+    if (!p.runs) return p.text ? `<hp:t>${esc(p.text)}</hp:t>` : '<hp:t/>';
+    const xml = p.runs.map((r) => ('note' in r ? noteXml(++noteNo, r.note) : r.text ? `<hp:t>${esc(r.text)}</hp:t>` : '')).join('');
+    return 'note' in p.runs[p.runs.length - 1] ? `${xml}<hp:t/>` : xml;
+  };
   const body = ps
     .map(
       (p, i) =>
-        `<hp:p id="${i + 1}" paraPrIDRef="${para[p.para]}" styleIDRef="0" pageBreak="${p.pageBreak ? 1 : 0}" columnBreak="0" merged="0"><hp:run charPrIDRef="${char[p.char]}">${p.text ? `<hp:t>${esc(p.text)}</hp:t>` : '<hp:t/>'}</hp:run></hp:p>`,
+        `<hp:p id="${i + 1}" paraPrIDRef="${para[p.para]}" styleIDRef="0" pageBreak="${p.pageBreak ? 1 : 0}" columnBreak="0" merged="0"><hp:run charPrIDRef="${char[p.char]}">${runXml(p)}</hp:run></hp:p>`,
     )
     .join('');
   return `${SECTION_OPEN}${first}${body}</hs:sec>`;
@@ -373,13 +401,18 @@ export function zipStore(files: { name: string; data: Uint8Array }[], date = new
   return out;
 }
 
-/** 학위논문 HWPX 파일 바이트 */
-export function buildThesisHwpx(d: ThesisDoc, now = new Date()): Uint8Array {
-  const enc = new TextEncoder();
+/** HWPX의 header.xml·section0.xml 내용 (검사에서도 사용) */
+export function thesisXml(d: ThesisDoc) {
   const { xml: header, char, para } = buildHeader();
   const journal = d.docType === '학술지논문';
   const ps = journal ? journalParagraphs(d) : thesisParagraphs(d);
-  const section = buildSection(ps, char, para, journal);
+  return { header, section: buildSection(ps, char, para, journal), ps };
+}
+
+/** 학위논문 HWPX 파일 바이트 */
+export function buildThesisHwpx(d: ThesisDoc, now = new Date()): Uint8Array {
+  const enc = new TextEncoder();
+  const { header, section, ps } = thesisXml(d);
   const iso = now.toISOString().replace(/\.\d+Z$/, 'Z');
   const hpf = SKELETON_FILES['Contents/content.hpf']
     .replace(/<opf:title\/>/, `<opf:title>${esc(d.titleKo)}</opf:title>`)

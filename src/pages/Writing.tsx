@@ -7,6 +7,7 @@ import { AI_MODEL_LABEL, AiError, generate } from '../lib/ai';
 import { buildThesisHwpx, sectionsOf, type ThesisDoc } from '../lib/hwpx';
 import { checkBib, formatCitation, segsToText, sortForStyle } from '../lib/citation';
 import { checkCitations, type CiteReport } from '../lib/cite-check';
+import { checkFootnotes } from '../lib/footnotes';
 import { downloadFile, safeFileName, uid } from '../lib/utils';
 import { ABSTRACT_SCHEMA, CHAPTER_SCHEMA, OUTLINE_SCHEMA, thesisContext } from '../lib/prompts';
 import { saveOutputToDrive } from '../lib/sync';
@@ -466,6 +467,7 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
           </Card>
 
           {citeReport && <CiteCheckCard report={citeReport} chapters={t.chapters} onFix={() => nav.go('references')} />}
+          <FootnoteCard chapters={t.chapters} />
 
           <Card title={isJournal ? '출력 — 학술지 투고 원고 HWPX' : '출력 — 한국외대 학위논문 서식 HWPX'}>
             <ol className="export-steps">
@@ -501,6 +503,32 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
         </div>
       </div>
     </>
+  );
+}
+
+/** 각주 입력 예시와 점검 (경고만, 출력은 막지 않음). 각주는 HWPX에서 한글 각주로 바뀐다. */
+function FootnoteCard({ chapters }: { chapters: ThesisChapter[] }) {
+  const { count, issues } = useMemo(() => checkFootnotes(chapters), [chapters]);
+  return (
+    <Card title="각주" extra={<span className="muted small">HWPX에서 한글 각주로 출력</span>}>
+      <p className="small">
+        본문에 <code>[^1]</code>을 넣고, 같은 장 아무 줄에 <code>[^1]: 각주 내용</code>을 쓰세요. 번호는 문서 전체에서 1부터 자동으로 매겨집니다.
+      </p>
+      <pre className="footnote-example">{'이 점은 선행연구에서도 지적되었다.[^1]\n\n[^1]: 홍길동(2020), 45쪽 참고.'}</pre>
+      <p className="small">
+        각주 {count}개
+        {issues.length ? <span className="warn-tag">확인할 항목 {issues.length}건</span> : count ? <span className="ok-tag">문제 없음</span> : null}
+      </p>
+      {issues.length > 0 && (
+        <ul className="cite-check">
+          {issues.map((x, i) => (
+            <li key={i}>
+              <code>[^{x.label}]</code> {x.kind} <span className="muted small">— {x.chapter}{x.kind === '정의 없음' || x.kind === '내용 없음' ? ' · 각주로 바꾸지 않고 글자로 남음' : x.kind === '중복 정의' ? ' · 처음 정의를 사용' : x.kind === '여러 번 참조' ? ' · 참조마다 같은 내용의 각주가 생김' : ''}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   );
 }
 

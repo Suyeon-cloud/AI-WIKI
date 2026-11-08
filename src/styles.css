@@ -728,3 +728,5 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 .cite-check { margin: 8px 0; font-size: 13px; }
 .cite-check summary { cursor: pointer; font-weight: 600; }
 .cite-check ul { margin: 6px 0; padding-left: 18px; line-height: 1.7; word-break: keep-all; }
+
+.footnote-example { margin: 6px 0 10px; padding: 8px 10px; background: #faf9f6; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; white-space: pre-wrap; }

@@ -17,6 +17,9 @@ import { DEFAULT_WRITING, SAMPLE_MATERIALS } from '../src/data/sample';
 import { nextRecoveryAcks, recoveryAckKey, recoveryKey, visibleRecovery, type RecoveryCopy } from '../src/lib/idb-store';
 import { checkCitations, extractCitations, matchCitation } from '../src/lib/cite-check';
 import { normalizeThesis } from '../src/lib/projects';
+import { checkFootnotes, segmentLine, splitNotes } from '../src/lib/footnotes';
+import { buildThesisHwpx, thesisXml, type ThesisDoc } from '../src/lib/hwpx';
+import sampleThesis from '../.claude/skills/hufs-thesis-writing/examples/sample-thesis.json';
 import type { AppState, Bib, Material } from '../src/types';
 import obsidianNote from './fixtures/obsidian-real-note.md';
 import v1Storage from './fixtures/v1-storage.json';
@@ -413,6 +416,55 @@ function citeCheckTests() {
   eq(loaded?.chapters.map((c) => c.citedIds), [['hong'], undefined], '장별 citedIds는 저장·복원되고, 이전 원고는 필드 없이 그대로');
 }
 
+async function footnoteTests() {
+  console.log('\n[8] 각주');
+  const s = splitNotes('본문입니다.[^1]\n[^1]: 첫 각주\n[^1]: 다시 정의\n[^a]:   두 번째  ');
+  eq([s.body, [...s.defs], s.duplicates], ['본문입니다.[^1]', [['1', '첫 각주'], ['a', '두 번째']], ['1']], '정의 줄 분리·중복 정의 기록(처음 정의 사용)');
+  const defs = new Map([['1', '각주 하나'], ['b', '각주 둘']]);
+  eq(segmentLine('앞[^1] 뒤[^b]', defs), [{ text: '앞' }, { note: '각주 하나' }, { text: ' 뒤' }, { note: '각주 둘' }], '문단을 글자/각주 조각으로 나눔');
+  eq(segmentLine('정의 없는 표시[^9]', defs), [{ text: '정의 없는 표시[^9]' }], '정의 없는 표시는 글자로 남김');
+  eq(segmentLine('[^1]로 시작', defs), [{ note: '각주 하나' }, { text: '로 시작' }], '문단 맨 앞 각주');
+
+  const chk = checkFootnotes([
+    { title: 'Ⅰ', text: '가[^1] 나[^1] 다[^x] 라[^e]\n[^1]: 내용\n[^1]: 중복\n[^u]: 안 씀\n[^e]:' },
+    { title: 'Ⅱ', text: '각주 없음' },
+  ]);
+  eq(chk.count, 2, '각주로 바뀌는 표시 수(정의 없는·빈 표시 제외)');
+  eq(chk.issues.map((x) => `${x.label}:${x.kind}`).sort(), ['1:여러 번 참조', '1:중복 정의', 'e:내용 없음', 'u:사용되지 않음', 'x:정의 없음'].sort(), '정의 없음·중복·미사용·빈 내용·여러 번 참조 경고');
+
+  // HWPX: 실제 각주 객체, 문서 전체 연속 번호, 고유 instId, 이스케이프
+  const doc = {
+    ...(sampleThesis as unknown as ThesisDoc),
+    chapters: [
+      { title: 'Ⅰ. 서론', text: '첫 문장이다.[^1] 중간[^2] 끝.\n## 1. 배경[^1]\n[^1]: A & B <C> "인용"\n[^2]: 두 번째' },
+      { title: 'Ⅱ. 본론', text: '다음 장 문장.[^1]\n정의 없는 표시[^9] 유지\n[^1]: 세 번째' },
+    ],
+  };
+  for (const docType of ['학위논문', '학술지논문'] as const) {
+    const { section, header } = thesisXml({ ...doc, docType });
+    const notes = [...section.matchAll(/<hp:footNote number="(\d+)" suffixChar="41" instId="(\d+)">/g)];
+    eq(notes.map((m) => m[1]), ['1', '2', '3', '4'], `${docType}: 각주 4개, 문서 전체 연속 번호`);
+    eq(new Set(notes.map((m) => m[2])).size, 4, `${docType}: instId가 모두 다름`);
+    eq([...section.matchAll(/<hp:autoNum num="(\d+)" numType="FOOTNOTE">/g)].map((m) => m[1]), ['1', '2', '3', '4'], `${docType}: 각주 번호 필드`);
+    ok(section.includes('paraPrIDRef="10" styleIDRef="15"') && section.includes('<hp:run charPrIDRef="3"><hp:ctrl><hp:autoNum'), `${docType}: 골격의 각주 스타일(15)·문단(10)·글자(3) 사용`);
+    ok(header.includes('<hh:style id="15" type="PARA"') && header.includes('<hh:paraPr id="10"') && header.includes('<hh:charPr id="3"'), `${docType}: 참조하는 스타일·모양이 header에 있음`);
+    ok(section.includes('<hp:t> A &amp; B &lt;C&gt; &quot;인용&quot;</hp:t>') && !section.includes('<C>'), `${docType}: 각주 내용 특수문자 이스케이프`);
+    ok(section.includes('<hp:t>첫 문장이다.</hp:t><hp:ctrl><hp:footNote number="1"') && section.includes('<hp:t> 끝.</hp:t>'), `${docType}: 문장 중간 각주 앞뒤 글자 분리`);
+    ok(/<\/hp:footNote><\/hp:ctrl><hp:t\/><\/hp:run>/.test(section), `${docType}: 문단 끝 각주 뒤 빈 글자(한글 저장 형식)`);
+    ok(!section.includes('[^1]') && !section.includes('[^2]') && !section.includes('세 번째</hp:t></hp:run></hp:p><hp:p'), `${docType}: 각주 표시와 정의 줄은 본문 문단으로 남지 않음`);
+    ok(section.includes('정의 없는 표시[^9] 유지'), `${docType}: 정의 없는 표시는 글자 그대로`);
+    eq((section.match(/<hp:footNote /g) ?? []).length, (section.match(/<\/hp:footNote>/g) ?? []).length, `${docType}: 각주 태그 짝이 맞음`);
+  }
+  ok(!thesisXml({ ...doc, docType: '학위논문' }).section.includes('    1. 배경[^1]'), '목차의 절 제목에서 각주 표시 제거');
+
+  // 각주가 없는 원고는 기존과 같은 HWPX 바이트 (main 0780824 기준값)
+  const when = new Date('2026-01-15T12:00:00Z');
+  const sha = async (d: ThesisDoc) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', buildThesisHwpx(d, when)))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const base = sampleThesis as unknown as ThesisDoc;
+  eq(await sha({ ...base, docType: '학위논문' }), '3e5a78eaa58c7203b21e7295d4faec98d2b68651897096032219eb83c9e2a505', '각주 없는 학위논문 HWPX는 기존 출력과 동일');
+  eq(await sha({ ...base, docType: '학술지논문', journal: '시험용 학술지', affiliation: '시험용 소속' }), 'b39f54d5d395447bbc8f2562b34668bb97c3261ae6f7471f5091486bfd9582c7', '각주 없는 학술지논문 HWPX는 기존 출력과 동일');
+}
+
 (async () => {
   await storageTests();
   await backupTests();
@@ -421,6 +473,7 @@ function citeCheckTests() {
   citationTests();
   recoveryAckTests();
   citeCheckTests();
+  await footnoteTests();
   console.log(`\n${failed ? '실패' : '모두 통과'}: ${passed}건 통과, ${failed}건 실패`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => {
