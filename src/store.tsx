@@ -21,6 +21,8 @@ import { downloadFile } from './lib/utils';
 import { saveRecovery, clearRecovery, loadRecovery, recoveryKey, loadRecoveryAcks, saveRecoveryAcks, visibleRecovery, nextRecoveryAcks, type RecoveryAck, type RecoveryCopy } from './lib/idb-store';
 import { emptyThesis } from './lib/projects';
 import { bibStatusOf } from './lib/citation';
+import { applySaveRecord, MAX_EVENTS, type SaveChange } from './lib/project-history';
+import { SaveLoop } from './lib/save-loop';
 
 
 type Action =
@@ -44,6 +46,8 @@ type Action =
   | { type: 'selectProject'; id: string }
   | { type: 'moveMaterials'; ids: string[]; projectId: string | undefined }
   | { type: 'log'; event: Omit<ProjectEvent, 'id' | 'at'> }
+  /** 서버 저장 성공 후 바뀐 프로젝트에 '저장' 이력 (이력만 바뀐 다음 저장은 다시 기록하지 않음) */
+  | { type: 'recordSaves'; changes: SaveChange[]; at: string }
   // ── AI 산출물 · 학위논문 ──
   | { type: 'addOutput'; output: AiOutput }
   | { type: 'updateOutput'; id: string; patch: Partial<AiOutput> }
@@ -64,7 +68,6 @@ const initial = (): AppState => ({
 });
 
 const now = () => new Date().toISOString();
-const MAX_EVENTS = 500;
 
 function withEvent(state: AppState, e: Omit<ProjectEvent, 'id' | 'at'>): AppState {
   return { ...state, events: [{ ...e, id: uid(), at: now() }, ...state.events].slice(0, MAX_EVENTS) };
@@ -151,6 +154,8 @@ function reducer(state: AppState, a: Action): AppState {
     }
     case 'log':
       return withEvent(state, a.event);
+    case 'recordSaves':
+      return applySaveRecord(state, a.changes, a.at, uid);
 
     case 'addOutput':
       return { ...state, aiOutputs: [a.output, ...state.aiOutputs] };
@@ -241,9 +246,7 @@ function CloudStore({ children, engine, boot }: { children: ReactNode; engine: C
   const [retry, setRetry] = useState(0);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [storageError, setStorageError] = useState<string | null>(null);
-  const failed = useRef(false);
   const mounted = useRef(false);
-  const queue = useRef<Promise<void>>(Promise.resolve());
   const [draftKey] = useState(() => recoveryKey(authUser()!.id, uid()));
   const draftQueue = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
@@ -261,11 +264,26 @@ function CloudStore({ children, engine, boot }: { children: ReactNode; engine: C
     rawDispatch(a);
     setEdits((x) => x + 1);
   }, []);
+  // 저장 순서·실패·저장 이력 판정 (store 밖에서 시험 가능하도록 분리)
+  const [loop] = useState(() => new SaveLoop(engine, boot, {
+    isMounted: () => mounted.current,
+    afterSave: async (edits) => {
+      await draftQueue.current.catch(() => undefined);
+      await clearRecovery(draftKey, edits).catch(() => undefined);
+    },
+    onSaved: (edits, changes) => {
+      setSaved((x) => Math.max(x, edits));
+      setSavedAt(new Date().toLocaleTimeString('ko-KR'));
+      // 이력도 서버에 저장돼야 하므로 일반 변경처럼 처리한다. 이력만 바뀐 다음 저장은 changes가 비어 멈춘다.
+      if (changes.length) dispatch({ type: 'recordSaves', changes, at: new Date().toISOString() });
+    },
+    onError: (message) => setStorageError(message),
+  }));
   const resumeSave = useCallback(() => {
-    failed.current = false;
+    loop.resume();
     setStorageError(null);
     setRetry((x) => x + 1);
-  }, []);
+  }, [loop]);
   const pendingSave = edits > saved;
   useEffect(() => {
     if (!pendingSave) return;
@@ -275,25 +293,9 @@ function CloudStore({ children, engine, boot }: { children: ReactNode; engine: C
   }, [pendingSave]);
   useEffect(() => {
     if (!edits) return;
-    const timer = setTimeout(() => {
-      queue.current = queue.current.then(async () => {
-        if (!mounted.current || failed.current) return;
-        try {
-          await engine.save(state);
-          await draftQueue.current.catch(() => undefined);
-          await clearRecovery(draftKey, edits).catch(() => undefined);
-          if (mounted.current) {
-            setSaved((x) => Math.max(x, edits));
-            setSavedAt(new Date().toLocaleTimeString('ko-KR'));
-          }
-        } catch (e) {
-          failed.current = true;
-          if (mounted.current) setStorageError(e instanceof Error ? e.message : '저장하지 못했습니다.');
-        }
-      });
-    }, 500);
+    const timer = setTimeout(() => { void loop.enqueue(state, edits); }, 500);
     return () => clearTimeout(timer);
-  }, [engine, state, edits, retry, draftKey]);
+  }, [loop, state, edits, retry]);
   const backup = () => downloadFile(`ai-wiki-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(buildBackup(state), null, 2), 'application/json');
   return <StoreContext.Provider value={{ state, dispatch, toast, toasts, storageError, pendingSave, saveBlocked: !!storageError, resumeSave }}>
     <div className={`cloud-save-banner ${storageError ? 'cloud-save-error' : pendingSave ? 'cloud-save-pending' : 'cloud-save-done'}`} role={storageError ? 'alert' : 'status'}>

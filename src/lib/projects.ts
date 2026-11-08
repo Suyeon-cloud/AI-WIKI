@@ -77,7 +77,7 @@ export function normalizeProject(x: unknown): Project | null {
   });
 }
 
-const EVENT_KINDS: ProjectEvent['kind'][] = ['생성', '수정', '자료', '분석', '집필', '내보내기', '연동'];
+const EVENT_KINDS: ProjectEvent['kind'][] = ['생성', '수정', '자료', '분석', '집필', '내보내기', '연동', '저장'];
 
 export function normalizeEvent(x: unknown): ProjectEvent | null {
   if (!isObj(x) || !nonEmpty(x.projectId) || !nonEmpty(x.text)) return null;

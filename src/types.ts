@@ -166,7 +166,7 @@ export interface ProjectEvent {
   id: string;
   projectId: string;
   at: string;
-  kind: '생성' | '수정' | '자료' | '분석' | '집필' | '내보내기' | '연동';
+  kind: '생성' | '수정' | '자료' | '분석' | '집필' | '내보내기' | '연동' | '저장';
   text: string;
 }
 

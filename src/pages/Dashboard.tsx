@@ -5,6 +5,7 @@ import { SOURCE_TYPES, formatDate } from '../lib/utils';
 import { createProjectFolders, driveReady, obsidianReady } from '../lib/sync';
 import { Card, Empty, NeedProject, PageHeader, Relevance, SourceTag, StatusBadge } from '../components/ui';
 import { useNav } from '../components/ProjectDialog';
+import { eventLabel } from '../lib/project-history';
 
 const time = (iso: string) => {
   const d = new Date(iso);
@@ -221,7 +222,7 @@ export function Dashboard() {
               {events.map((e) => (
                 <li key={e.id}>
                   <span className={`ev ev-${e.kind}`}>{e.kind}</span>
-                  <span className="ev-text">{e.text}</span>
+                  <span className="ev-text">{eventLabel(e)}</span>
                   <span className="muted small nowrap">{time(e.at)}</span>
                 </li>
               ))}

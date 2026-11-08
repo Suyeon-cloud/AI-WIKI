@@ -16,7 +16,9 @@ import { CORRUPT_PREFIX, LEGACY_KEY_V1, STORAGE_KEY, loadState, saveState, type 
 import { DEFAULT_WRITING, SAMPLE_MATERIALS } from '../src/data/sample';
 import { nextRecoveryAcks, recoveryAckKey, recoveryKey, visibleRecovery, type RecoveryCopy } from '../src/lib/idb-store';
 import { checkCitations, extractCitations, matchCitation } from '../src/lib/cite-check';
-import { normalizeThesis } from '../src/lib/projects';
+import { normalizeEvent, normalizeThesis } from '../src/lib/projects';
+import { applySaveRecord, changedProjects, eventLabel, formatSave, MAX_EVENTS, parseSave, recordSaves, type SaveChange } from '../src/lib/project-history';
+import { SaveLoop } from '../src/lib/save-loop';
 import { checkFootnotes, segmentLine, splitNotes } from '../src/lib/footnotes';
 import { buildThesisHwpx, thesisXml, type ThesisDoc } from '../src/lib/hwpx';
 import sampleThesis from '../.claude/skills/hufs-thesis-writing/examples/sample-thesis.json';
@@ -465,6 +467,202 @@ async function footnoteTests() {
   eq(await sha({ ...base, docType: '학술지논문', journal: '시험용 학술지', affiliation: '시험용 소속' }), 'b39f54d5d395447bbc8f2562b34668bb97c3261ae6f7471f5091486bfd9582c7', '각주 없는 학술지논문 HWPX는 기존 출력과 동일');
 }
 
+function saveHistoryTests() {
+  console.log('\n[9] 프로젝트별 저장 이력');
+  const proj = (id: string) => ({ id, name: id, topic: '', keywords: [], overview: '', defaultView: '', status: '진행 중', createdAt: 'x', updatedAt: 'x', degree: '석사', department: '', advisor: '', student: '', studentEn: '', departmentEn: '' }) as unknown as AppState['projects'][number];
+  const mat = (id: string, projectId: string, title = id) => ({ ...normalizeMaterial({ id, title, sourceType: 'PDF', createdAt: '2026-01-01T00:00:00.000Z' })!, projectId });
+  const base: AppState = {
+    materials: [mat('m1', 'P1'), mat('m2', 'P1'), mat('m3', 'P2')],
+    settings: {} as AppState['settings'], writing: {} as AppState['writing'], selectedId: null,
+    projects: [proj('P1'), proj('P2')], currentProjectId: 'P1', events: [], aiOutputs: [],
+    theses: [{ projectId: 'P1', titleKo: 't', subtitle: '', titleEn: '', submitYear: '2026', submitMonth: '12', chapters: [], abstractKo: '', abstractEn: '', keywordsEn: '', materialIds: [], updatedAt: 'a' }],
+  };
+  const ids = (cs: SaveChange[]) => cs.map((c) => c.projectId);
+
+  eq(changedProjects(base, base), [], '변경 없음 → 기록 없음');
+  eq(changedProjects(base, { ...base, settings: { ...base.settings }, selectedId: 'm1', currentProjectId: 'P2' }), [], '프로젝트와 무관한 변경(설정·선택)만 → 기록 없음');
+  eq(changedProjects(base, { ...base, events: [{ id: 'e', projectId: 'P1', at: '2026-01-01T00:00:00.000Z', kind: '저장', text: '저장 — 원고' }] }), [], '이력만 바뀐 저장 → 기록 없음 (반복 저장 차단)');
+  eq(changedProjects(base, { ...base, materials: base.materials.map((m) => ({ ...m })) }), [], '객체만 새로 만들고 내용이 같으면(복원 등) 기록 없음');
+  const added = changedProjects(base, { ...base, materials: [mat('m9', 'P1'), ...base.materials] });
+  eq(added, [{ projectId: 'P1', counts: { added: 1, updated: 0, removed: 0, draft: false, outputs: 0, info: false } }], '자료 추가 → 그 프로젝트만');
+  eq(changedProjects(base, { ...base, materials: base.materials.map((m) => (m.id === 'm2' ? { ...m, title: '수정' } : m)) })[0].counts.updated, 1, '자료 수정');
+  eq(changedProjects(base, { ...base, materials: base.materials.filter((m) => m.id !== 'm1') })[0].counts.removed, 1, '자료 삭제');
+  eq(ids(changedProjects(base, { ...base, materials: base.materials.map((m) => (m.id === 'm1' ? { ...m, projectId: 'P2' } : m)) })), ['P1', 'P2'], '자료를 다른 프로젝트로 옮기면 양쪽 모두');
+  eq(changedProjects(base, { ...base, theses: [{ ...base.theses[0], abstractKo: '초록', updatedAt: 'b' }] })[0].counts.draft, true, '원고 변경');
+  eq(changedProjects(base, { ...base, aiOutputs: [{ id: 'o1', projectId: 'P2', kind: '전체 분석', title: 'x', createdAt: 'x', model: 'm', content: 'c', materialIds: [] }] }), [{ projectId: 'P2', counts: { added: 0, updated: 0, removed: 0, draft: false, outputs: 1, info: false } }], 'AI 결과물 추가');
+  eq(changedProjects(base, { ...base, projects: [{ ...base.projects[0], topic: '새 주제' }, base.projects[1]] })[0].counts.info, true, '프로젝트 정보 수정');
+  eq(changedProjects(base, { ...base, projects: [base.projects[1]], materials: base.materials.filter((m) => m.projectId !== 'P1') }), [], '삭제된 프로젝트는 기록하지 않음');
+
+  const c = { added: 2, updated: 1, removed: 0, draft: true, outputs: 0, info: false };
+  eq(formatSave(c), '저장 — 자료 추가 2건, 자료 수정 1건, 원고', '요약 문구');
+  eq(parseSave(formatSave(c)), c, '요약 문구 ↔ 숫자 왕복');
+  eq(parseSave('자료를 추가했습니다.'), null, '다른 이력 문구는 묶지 않음');
+  eq([eventLabel({ kind: '저장', text: formatSave(c) }), eventLabel({ kind: '자료', text: '저장 — 그대로' }), eventLabel({ kind: '저장', text: '직접 쓴 문구' })], ['자료 추가 2건, 자료 수정 1건, 원고', '저장 — 그대로', '직접 쓴 문구'], "화면 표시: '저장' 이력만 앞의 '저장 — '를 빼고 보여 줌 (저장 데이터는 그대로)");
+
+  let n = 0;
+  const id = () => `ev${++n}`;
+  const t0 = '2026-01-01T09:00:00.000Z';
+  const one = recordSaves([], [{ projectId: 'P1', counts: c }], t0, id);
+  eq(one.map((e) => [e.id, e.kind, e.at, e.text]), [['ev1', '저장', t0, '저장 — 자료 추가 2건, 자료 수정 1건, 원고']], "새 '저장' 이력");
+  const other = { id: 'x', projectId: 'P1', at: '2026-01-01T09:01:00.000Z', kind: '자료' as const, text: '자료를 추가했습니다.' };
+  const t1 = '2026-01-01T09:05:00.000Z';
+  const merged = recordSaves([other, ...one], [{ projectId: 'P1', counts: { ...c, added: 1, draft: false, info: true } }], t1, id);
+  eq(merged.map((e) => [e.id, e.at, e.text]), [['ev1', t1, '저장 — 자료 추가 3건, 자료 수정 2건, 원고, 프로젝트 정보'], ['x', other.at, other.text]], '10분 안 같은 프로젝트 저장은 하나로 묶고 맨 앞으로 (같은 id)');
+  const t2 = '2026-01-01T09:15:01.000Z';
+  eq(recordSaves(merged, [{ projectId: 'P1', counts: c }], t2, id).filter((e) => e.kind === '저장').length, 2, '10분이 지나면 새 이력');
+  eq(recordSaves(one, [{ projectId: 'P2', counts: c }], t1, id).map((e) => e.projectId), ['P2', 'P1'], '다른 프로젝트는 따로 기록');
+  const full = Array.from({ length: MAX_EVENTS }, (_, i) => ({ id: `old${i}`, projectId: 'P2', at: t0, kind: '자료' as const, text: 't' }));
+  const capped = recordSaves(full, [{ projectId: 'P1', counts: c }], t1, id);
+  eq([capped.length, capped[0].kind, capped[capped.length - 1].id], [MAX_EVENTS, '저장', `old${MAX_EVENTS - 2}`], '전체 500건 제한 유지');
+
+  // 저장 성공 → 기록 → 기록만 바뀐 다음 저장은 다시 기록하지 않는 흐름
+  const s1 = { ...base, materials: [mat('m9', 'P1'), ...base.materials] };
+  const ch1 = changedProjects(base, s1);
+  const s2 = { ...s1, events: recordSaves(s1.events, ch1, t0, id) };
+  eq([ch1.length, changedProjects(s1, s2).length], [1, 0], '기록 후 다음 저장에서 반복 기록이 생기지 않음');
+  eq(normalizeEvent({ id: 'e', projectId: 'P1', at: t0, kind: '저장', text: '저장 — 원고' })?.kind, '저장', "'저장' 이력 종류가 불러오기에서 유지됨");
+}
+
+async function saveLoopTests() {
+  console.log('\n[10] 저장 → 이력 등록 → 이력 저장 통합 흐름 (가짜 저장 엔진, 서버 접속 없음)');
+  const proj = (id: string) => ({ id, name: id, topic: '', keywords: [], overview: '', defaultView: '', status: '진행 중', createdAt: 'x', updatedAt: 'x', degree: '석사', department: '', advisor: '', student: '', studentEn: '', departmentEn: '' }) as unknown as AppState['projects'][number];
+  const mat = (id: string, projectId: string) => ({ ...normalizeMaterial({ id, title: id, sourceType: 'PDF', createdAt: '2026-01-01T00:00:00.000Z' })!, projectId });
+  const boot = (): AppState => ({
+    materials: [mat('m1', 'P1'), mat('m2', 'P2')],
+    settings: {} as AppState['settings'], writing: {} as AppState['writing'], selectedId: null,
+    projects: [proj('P1'), proj('P2')], currentProjectId: 'P1', events: [], aiOutputs: [],
+    theses: [{ projectId: 'P2', titleKo: 't', subtitle: '', titleEn: '', submitYear: '2026', submitMonth: '12', chapters: [], abstractKo: '', abstractEn: '', keywordsEn: '', materialIds: [], updatedAt: 'a' }],
+  });
+  const tick = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setTimeout(r, 0)); };
+
+  class FakeEngine {
+    saves: AppState[] = [];
+    failNext = 0;
+    gate: Promise<void> | null = null;
+    async save(s: AppState) {
+      if (this.gate) await this.gate;
+      if (this.failNext > 0) { this.failNext--; throw new Error('가짜 저장 실패'); }
+      this.saves.push(s);
+    }
+  }
+  /** CloudStore와 같은 순서: 변경 → 저장 대기열 → 성공 시 이력 기록(일반 변경처럼 다시 저장) */
+  class Harness {
+    state: AppState;
+    edits = 0;
+    saved = 0;
+    error: string | null = null;
+    clock = '2026-01-01T09:00:00.000Z';
+    private n = 0;
+    loop: SaveLoop;
+    constructor(public engine: FakeEngine, b = boot()) {
+      this.state = b;
+      this.loop = new SaveLoop(engine, b, {
+        isMounted: () => true,
+        onSaved: (edits, changes) => {
+          this.saved = Math.max(this.saved, edits);
+          if (changes.length) this.change((s) => applySaveRecord(s, changes, this.clock, () => `ev${++this.n}`));
+        },
+        onError: (m) => { this.error = m; },
+      });
+    }
+    change(fn: (s: AppState) => AppState) {
+      this.state = fn(this.state);
+      this.edits++;
+      void this.loop.enqueue(this.state, this.edits);
+    }
+    retry() { this.loop.resume(); this.error = null; void this.loop.enqueue(this.state, this.edits); }
+    saveEvents() { return this.state.events.filter((e) => e.kind === '저장'); }
+  }
+  const addMat = (id: string, p: string) => (s: AppState) => ({ ...s, materials: [mat(id, p), ...s.materials] });
+
+  // 1. 정상: 저장 성공 → 이력 1건 → 이력 저장 1번 → 멈춤
+  {
+    const eng = new FakeEngine();
+    const h = new Harness(eng);
+    const before = h.state;
+    h.change(addMat('n1', 'P1'));
+    await tick();
+    eq([eng.saves.length, h.saveEvents().length, h.saved === h.edits], [2, 1, true], '저장 성공 → 이력 1건 → 이력 저장 1번 후 대기 상태');
+    ok(eng.saves[1].events.some((e) => e.kind === '저장' && e.projectId === 'P1'), '이력이 서버 저장 내용에 포함됨');
+    await tick();
+    eq(eng.saves.length, 2, '추가 저장이 더 생기지 않음 (무한 반복 없음)');
+    const last = h.state;
+    ok(last.materials.find((m) => m.id === 'm2') === before.materials.find((m) => m.id === 'm2') && last.theses === before.theses && last.projects === before.projects && last.settings === before.settings && last.aiOutputs === before.aiOutputs, '다른 프로젝트(P2) 자료·원고·프로젝트·설정은 그대로');
+    eq(h.state.events.map((e) => e.projectId), ['P1'], '이력은 바뀐 프로젝트(P1)에만');
+  }
+
+  // 2. 저장 실패 → 기록 없음 → 재시도 성공 시 그동안의 변경을 한 번에 기록
+  {
+    const eng = new FakeEngine();
+    eng.failNext = 1;
+    const h = new Harness(eng);
+    h.change(addMat('n1', 'P1'));
+    await tick();
+    eq([eng.saves.length, h.saveEvents().length, !!h.error], [0, 0, true], '저장 실패 → 이력 없음, 오류 표시');
+    h.change(addMat('n2', 'P1'));
+    await tick();
+    eq(eng.saves.length, 0, '실패 후에는 다시 시도 전까지 저장하지 않음');
+    h.retry();
+    await tick();
+    eq([eng.saves.length, h.saveEvents().length, h.saveEvents()[0]?.text], [2, 1, '저장 — 자료 추가 2건'], '재시도 성공 → 실패 동안의 변경을 이력 1건으로');
+  }
+
+  // 3. 이력 저장 실패 → 재시도 → 이력 중복·반복 없음
+  {
+    const eng2 = new FakeEngine();
+    const h2 = new Harness(eng2);
+    const origSave = eng2.save.bind(eng2);
+    let calls = 0;
+    eng2.save = async (s: AppState) => { calls++; if (calls === 2) throw new Error('이력 저장 실패'); return origSave(s); };
+    h2.change(addMat('n1', 'P1'));
+    await tick();
+    eq([eng2.saves.length, h2.saveEvents().length, !!h2.error], [1, 1, true], '이력 저장 실패 → 화면 이력 1건, 오류 표시');
+    h2.retry();
+    await tick();
+    eq([eng2.saves.length, h2.saveEvents().length], [2, 1], '재시도로 이력 저장 → 이력 중복 없음');
+    ok(eng2.saves[1].events.filter((e) => e.kind === '저장').length === 1, '서버에 저장된 이력도 1건');
+    await tick();
+    eq(eng2.saves.length, 2, '재시도 뒤 반복 저장 없음');
+  }
+
+  // 4. 저장 중 추가 수정 → 각각 정확히 기록
+  {
+    const eng = new FakeEngine();
+    let open!: () => void;
+    eng.gate = new Promise((r) => { open = r; });
+    const h = new Harness(eng);
+    h.change(addMat('n1', 'P1'));
+    await tick();
+    h.change((s) => ({ ...s, theses: s.theses.map((t) => (t.projectId === 'P2' ? { ...t, abstractKo: '초록', updatedAt: 'b' } : t)) }));
+    eng.gate = null;
+    open();
+    await tick();
+    eq(h.saveEvents().map((e) => [e.projectId, e.text]).sort(), [['P1', '저장 — 자료 추가 1건'], ['P2', '저장 — 원고']], '저장 중 생긴 다른 프로젝트 수정도 따로 기록');
+    const final = eng.saves[eng.saves.length - 1];
+    ok(final.materials.some((m) => m.id === 'n1') && final.theses[0].abstractKo === '초록' && final.events.length === 2, '마지막 서버 저장에 모든 변경과 이력 포함');
+    const n = eng.saves.length;
+    await tick();
+    eq(eng.saves.length, n, '추가 저장 없음');
+  }
+
+  // 5. 10분 안 저장은 하나로, 10분 뒤는 새 이력
+  {
+    const eng = new FakeEngine();
+    const h = new Harness(eng);
+    h.change(addMat('n1', 'P1'));
+    await tick();
+    h.clock = '2026-01-01T09:05:00.000Z';
+    h.change(addMat('n2', 'P1'));
+    await tick();
+    eq(h.saveEvents().map((e) => [e.at, e.text]), [['2026-01-01T09:05:00.000Z', '저장 — 자료 추가 2건']], '10분 안 두 번 저장 → 이력 1건으로 묶임');
+    h.clock = '2026-01-01T09:16:00.000Z';
+    h.change(addMat('n3', 'P1'));
+    await tick();
+    eq(h.saveEvents().length, 2, '10분 뒤 저장 → 새 이력');
+    ok(h.saved === h.edits && !h.error, '모든 변경 저장 완료');
+  }
+}
+
 (async () => {
   await storageTests();
   await backupTests();
@@ -474,6 +672,8 @@ async function footnoteTests() {
   recoveryAckTests();
   citeCheckTests();
   await footnoteTests();
+  saveHistoryTests();
+  await saveLoopTests();
   console.log(`\n${failed ? '실패' : '모두 통과'}: ${passed}건 통과, ${failed}건 실패`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => {
