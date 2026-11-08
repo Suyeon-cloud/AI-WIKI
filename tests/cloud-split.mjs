@@ -12,13 +12,16 @@ const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
 const C = '33333333-3333-4333-8333-333333333333';
 const email = { [A]: 'a@example.com', [B]: 'b@example.com', [C]: 'c@example.com' };
-await db.exec(`create role anon; create role authenticated; create role service_role; create role authenticator;
+await db.exec(`create role anon; create role authenticated; create role service_role;
 create schema auth; create table auth.users(id uuid primary key, email text);
 create function auth.uid() returns uuid language sql stable as
 $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 grant usage on schema auth to authenticated;
 grant execute on function auth.uid() to authenticated;
 insert into auth.users values ('${A}','${email[A]}'), ('${B}','${email[B]}'), ('${C}','${email[C]}');`);
+// Supabase처럼 public의 새 테이블·함수에 anon·authenticated·service_role 권한이 자동으로 붙는 상태에서 적용한다.
+await db.exec(`alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+alter default privileges in schema public grant all on functions to anon, authenticated, service_role;`);
 await db.exec(await sql('migrations/202611010001_user_state.sql'));
 await db.exec(await sql('migrations/202611080001_split_materials.sql'));
 // Supabase처럼 슈퍼유저가 아니고 BYPASSRLS도 없는 역할이 테이블·함수를 소유한 상태로 검사한다.
@@ -120,7 +123,17 @@ await assert.rejects(db.query("select public.ai_wiki_save_changes(1, null, '[]',
 await as(A);
 await assert.rejects(db.query(`insert into public.ai_wiki_materials(user_id,id,position,data) values ('${A}','x',1,'{"id":"x"}')`));
 await assert.rejects(db.query(`update public.ai_wiki_user_meta set revision = 99 where user_id='${A}'`));
-console.log('PASS: anon and other accounts cannot read or save; direct table writes denied, saves only via RPC');
+{
+  const can = async (fn) => Object.fromEntries((await query('admin', `select r, has_function_privilege(r, '${fn}', 'execute') as ok
+    from unnest(array['public','anon','authenticated','service_role']) r`)).map((x) => [x.r, x.ok]));
+  assert.deepEqual(await can('public.ai_wiki_save_changes(bigint, jsonb, jsonb, text[])'), { public: false, anon: false, authenticated: true, service_role: false });
+  assert.deepEqual(await can('public.ai_wiki_guard_legacy_state()'), { public: false, anon: false, authenticated: false, service_role: false });
+  await db.exec('reset role');
+  await db.exec('set role service_role');
+  await assert.rejects(db.query("select public.ai_wiki_save_changes(1, null, '[]', '{}')"));
+  await db.exec('reset role');
+}
+console.log('PASS: anon and other accounts cannot read or save; direct table writes denied, saves only via RPC; only authenticated may execute the save function');
 
 // ── 3. 이전 결과: 자료 수·내용·순서·메타가 원본과 같다
 const [check] = await query('admin', (await sql('manual/split-verify-user.sql')).replaceAll('REPLACE_WITH_EMAIL', email[A]));
@@ -150,8 +163,16 @@ await assert.rejects(legacyA.save(before));
 await as(A);
 await assert.rejects(db.query(`delete from public.ai_wiki_user_state where user_id='${A}'`), (e) => e.code === 'PT409');
 assert.deepEqual(await legacyRow(A), frozen);
+await as(A);
+await assert.rejects(db.query(`update public.ai_wiki_user_state set revision = revision where user_id='${A}'`), (e) => e.code === 'PT409');
 const legacyB = engine(B);
-await legacyB.save(await legacyB.load());
+const stateB = await legacyB.load();
+const revB = (await legacyRow(B)).revision;
+await legacyB.save({ ...stateB, materials: stateB.materials.map((m, i) => (i === 0 ? { ...m, title: 'B 수정' } : m)) });
+const savedB = await legacyRow(B);
+assert.equal(savedB.revision, revB + 1);
+assert.equal(savedB.state.materials[0].title, 'B 수정');
+assert.equal((await query('admin', 'select count(*)::int as n from public.ai_wiki_user_meta where user_id=$1', [B]))[0].n, 0);
 console.log('PASS: old-app writes to a migrated account are rejected and its original row is untouched; other accounts unaffected');
 
 // ── 6. 변경분 저장: 바뀐 자료만 보내고, 추가·삭제·순서·메타가 유지된다
@@ -252,7 +273,19 @@ console.log('PASS: a failed chunk keeps every material (old or new, never missin
   await as(A);
   await assert.rejects(db.query("select public.ai_wiki_save_changes($1, '[]'::jsonb, null, null)", [r2.revision]), (e) => e.code === '22023');
 }
-console.log('PASS: save function treats SQL NULL and JSON null alike and keeps the stored meta');
+{
+  const before = (await query('admin', 'select state, revision::int as revision from public.ai_wiki_user_meta where user_id=$1', [A]))[0];
+  const rowsBefore = await query('admin', 'select id, data, deleted_at from public.ai_wiki_materials where user_id=$1 order by id', [A]);
+  const m = { id: 'a-m1', title: '중복 시험' };
+  await as(A);
+  await assert.rejects(db.query('select public.ai_wiki_save_changes($1, null, $2::jsonb, $3::text[])',
+    [before.revision, JSON.stringify([{ position: 0, data: m }, { position: 1, data: { ...m, title: '두 번째' } }]), []]), (e) => e.code === '22023' && /duplicate/.test(e.message));
+  await assert.rejects(db.query('select public.ai_wiki_save_changes($1, null, $2::jsonb, $3::text[])',
+    [before.revision, JSON.stringify([{ position: 0, data: m }]), ['a-m1']]), (e) => e.code === '22023' && /both/.test(e.message));
+  assert.deepEqual((await query('admin', 'select state, revision::int as revision from public.ai_wiki_user_meta where user_id=$1', [A]))[0], before);
+  assert.deepEqual(await query('admin', 'select id, data, deleted_at from public.ai_wiki_materials where user_id=$1 order by id', [A]), rowsBefore);
+}
+console.log('PASS: save function treats SQL NULL and JSON null alike and keeps the stored meta; duplicate ids and upsert/delete overlaps are rejected with nothing written');
 
 // ── 10. 되돌리기: keep_changes는 새 구조의 내용으로, discard는 전환 전 원본으로
 const current = await engine(A).load();
@@ -276,19 +309,13 @@ assert.deepEqual(await legacyRow(A), legacyBefore);
 assert.equal((await engine(A).load()).materials.length, legacyBefore.state.materials.length);
 console.log('PASS: rollback (discard) returns to the untouched pre-migration row');
 
-// ── 11. 서버 백업: 같은 스냅샷, 비공개 스키마, PUBLIC·앱 역할 권한 없음, Data API 노출 시 중단, 원본 무변경, 덮어쓰기 불가
+// ── 11. 서버 백업: 같은 스냅샷, 비공개 스키마, PUBLIC·앱 역할 권한 없음, RLS, 원본 무변경, 덮어쓰기 불가
 const allRows = () => query('admin', 'select user_id, state, revision::int as revision from public.ai_wiki_user_state order by user_id');
 {
   const backupSql = await sql('manual/backup-user-state.sql');
   assert.match(backupSql, /^begin isolation level repeatable read;/m, 'backup copies and verifies from one snapshot');
   const originals = await allRows();
   await db.exec('reset role');
-  // Data API가 백업 스키마를 노출하도록 설정돼 있으면 아무것도 만들지 않고 중단한다.
-  await db.exec("alter role authenticator set pgrst.db_schemas = 'public, graphql_public, ai_wiki_backup'");
-  await assert.rejects(db.exec(backupSql), /Data API/);
-  await db.exec('rollback');
-  assert.equal((await query('admin', "select count(*)::int as n from pg_namespace where nspname = 'ai_wiki_backup'"))[0].n, 0);
-  await db.exec("alter role authenticator set pgrst.db_schemas = 'public, graphql_public'");
   // Supabase처럼 새 스키마·테이블에 PUBLIC과 앱 역할 권한이 자동으로 붙는 상태를 흉내 낸다.
   await db.exec('alter default privileges grant all on tables to public, anon, authenticated, service_role');
   await db.exec('alter default privileges grant usage, create on schemas to public, anon, authenticated, service_role');
@@ -302,6 +329,7 @@ const allRows = () => query('admin', 'select user_id, state, revision::int as re
     unnest(array['select','insert','update','delete','truncate']) p
     where has_table_privilege(r, 'ai_wiki_backup.user_state_20261108', p) or has_schema_privilege(r, 'ai_wiki_backup', 'usage')`);
   assert.deepEqual(leaks, []);
+  assert.equal((await query('admin', "select relrowsecurity from pg_class where oid = 'ai_wiki_backup.user_state_20261108'::regclass"))[0].relrowsecurity, true);
   for (const who of [null, A]) {
     await as(who);
     await assert.rejects(db.query('select * from ai_wiki_backup.user_state_20261108'));
@@ -312,7 +340,7 @@ const allRows = () => query('admin', 'select user_id, state, revision::int as re
   assert.deepEqual(await query('admin', 'select user_id, state, revision::int as revision from ai_wiki_backup.user_state_20261108 order by user_id'), originals);
   assert.deepEqual(await allRows(), originals);
 }
-console.log('PASS: backup uses one snapshot in a private schema, has no PUBLIC/anon/authenticated/service_role access, aborts if exposed to the Data API, never changes or overwrites data');
+console.log('PASS: backup uses one snapshot in a private schema, has no PUBLIC/anon/authenticated/service_role access, keeps RLS on, never changes or overwrites data');
 
 // ── 11b. 수동 복원: 예상 revision이 맞을 때만, 직전 내용 보관, 다른 계정 무변경, 전환된 계정 거부
 {

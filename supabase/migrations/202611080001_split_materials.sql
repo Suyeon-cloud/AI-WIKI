@@ -78,6 +78,13 @@ begin
   ) then
     raise exception 'invalid material' using errcode = '22023';
   end if;
+  -- 같은 요청 안에서 한 자료를 두 번 저장하거나, 저장과 삭제를 동시에 요청하면 거부한다.
+  if (select count(*) <> count(distinct e->'data'->>'id') from jsonb_array_elements(v_upserts) e) then
+    raise exception 'duplicate material id in upserts' using errcode = '22023';
+  end if;
+  if exists (select 1 from jsonb_array_elements(v_upserts) e where e->'data'->>'id' = any(v_deletes)) then
+    raise exception 'material id in both upserts and deletes' using errcode = '22023';
+  end if;
 
   update public.ai_wiki_user_meta
      set revision = revision + 1, state = coalesce(v_meta, state)
@@ -101,7 +108,9 @@ begin
   return jsonb_build_object('revision', v_revision, 'count', v_count);
 end;
 $$;
-revoke all on function public.ai_wiki_save_changes(bigint, jsonb, jsonb, text[]) from public, anon;
+-- Only signed-in users may call it. Supabase grants EXECUTE on new public functions to anon,
+-- authenticated and service_role by default, so every other role is revoked explicitly.
+revoke all on function public.ai_wiki_save_changes(bigint, jsonb, jsonb, text[]) from public, anon, authenticated, service_role;
 grant execute on function public.ai_wiki_save_changes(bigint, jsonb, jsonb, text[]) to authenticated;
 
 -- Once an account has a meta row, the old whole-document row is frozen:
@@ -122,7 +131,7 @@ begin
   return case tg_op when 'DELETE' then old else new end;
 end;
 $$;
-revoke all on function public.ai_wiki_guard_legacy_state() from public, anon, authenticated;
+revoke all on function public.ai_wiki_guard_legacy_state() from public, anon, authenticated, service_role;
 create trigger ai_wiki_guard_legacy_state
 before insert or update or delete on public.ai_wiki_user_state
 for each row execute function public.ai_wiki_guard_legacy_state();

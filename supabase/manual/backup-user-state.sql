@@ -1,11 +1,12 @@
 -- 서버 백업: ai_wiki_user_state 전체(모든 계정)를 비공개 스키마에 복사한다. SQL Editor에서 직접 실행한다.
 -- 범위: 전환·시험 SQL은 계정 하나만 다루지만, 새 보호 트리거는 테이블 전체에 붙으므로 모든 계정을 백업한다.
--- 시점: REPEATABLE READ 트랜잭션이라 복사와 검증이 같은 스냅샷(트랜잭션 시작 시점)을 본다.
---   실행 중에 앱이 저장해도 그 저장은 막히지 않으며 백업에 들어가지 않는다. backed_up_at = 스냅샷 시각.
+-- 시점: REPEATABLE READ 트랜잭션에서는 BEGIN이 아니라 트랜잭션 안의 첫 SQL 문(create schema)을 실행할 때
+--   스냅샷이 잡히고, 복사와 검증은 모두 그 스냅샷을 본다. 그 뒤에 커밋된 앱 저장은 막히지 않으며 백업에 들어가지 않는다.
 --   백업 이후의 변경분은 이 백업에 없다.
+--   backed_up_at(now())은 트랜잭션 시작(BEGIN) 시각이며, 스냅샷 시점 바로 앞의 시각이다.
 -- 공개 차단:
---   * public 스키마가 아닌 ai_wiki_backup 스키마에 만든다. Data API는 Settings → API → Exposed schemas
---     (기본값 public, graphql_public)만 노출하므로 이 스키마를 추가하지 않는 한 API로 보이지 않는다.
+--   * public 스키마가 아닌 ai_wiki_backup 스키마에 만든다. Data API는 Settings → API → Exposed schemas에
+--     있는 스키마만 노출한다. 실행 전에 그 목록이 public, graphql_public뿐인지 대시보드에서 확인한다.
 --   * 기본 권한 설정으로 붙을 수 있는 권한을 PUBLIC·anon·authenticated·service_role에서 모두 회수하고
 --     RLS를 켠다(정책 없음 = 전부 거부). 아래 검증에서 하나라도 남아 있으면 전체를 취소한다.
 -- 덮어쓰기 방지: 같은 이름의 백업 테이블이 이미 있으면 create table이 실패하고 아무것도 바뀌지 않는다.
@@ -27,7 +28,6 @@ do $$
 declare
   v_role text;
   v_priv text;
-  v_exposed text;
 begin
   -- 같은 스냅샷 기준으로 행 수와 각 행의 내용·버전이 원본과 같아야 한다.
   if (select count(*) from ai_wiki_backup.user_state_20261108) <> (select count(*) from public.ai_wiki_user_state) then
@@ -56,22 +56,13 @@ begin
   if not (select relrowsecurity from pg_class where oid = 'ai_wiki_backup.user_state_20261108'::regclass) then
     raise exception '중단: 백업 테이블의 RLS가 꺼져 있습니다.';
   end if;
-
-  -- Data API 노출 스키마가 DB 역할 설정에 있으면 백업 스키마가 들어 있지 않은지 확인한다.
-  -- (설정이 대시보드에만 있으면 여기서 보이지 않으므로 Settings → API에서 직접 확인한다.)
-  select string_agg(c, ',') into v_exposed
-    from pg_roles r, unnest(r.rolconfig) c
-   where r.rolname = 'authenticator' and c like 'pgrst.db_schemas=%';
-  if v_exposed ilike '%ai_wiki_backup%' then
-    raise exception '중단: 백업 스키마가 Data API 노출 스키마에 들어 있습니다.';
-  end if;
 end $$;
 
 commit;
 
--- 확인용(읽기 전용): 계정 수, 자료 수 합계, 크기, 스냅샷 시각
+-- 확인용(읽기 전용): 계정 수, 자료 수 합계, 크기, 백업 트랜잭션 시작 시각
 select count(*) as accounts,
        sum(jsonb_array_length(state->'materials')) as materials,
        pg_size_pretty(sum(octet_length(state::text))::bigint) as size,
-       min(backed_up_at) as snapshot_at
+       min(backed_up_at) as backed_up_at
 from ai_wiki_backup.user_state_20261108;
