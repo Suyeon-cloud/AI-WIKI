@@ -7,6 +7,9 @@ import { Card, Empty, NeedProject, PageHeader, Relevance, SourceTag, StatusBadge
 import { useNav } from '../components/ProjectDialog';
 import { eventLabel } from '../lib/project-history';
 
+/** 활동 이력 종류 → 배지 색 */
+const EV_TONE: Record<string, string> = { 생성: 'create', 저장: 'save', 수정: 'edit', 자료: 'data', 분석: 'ai', 집필: 'ai', 내보내기: 'out', 연동: 'out' };
+
 const time = (iso: string) => {
   const d = new Date(iso);
   return `${formatDate(iso)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -220,10 +223,12 @@ export function Dashboard() {
           ) : (
             <ul className="timeline-list">
               {events.map((e) => (
-                <li key={e.id}>
-                  <span className={`ev ev-${e.kind}`}>{e.kind}</span>
-                  <span className="ev-text">{eventLabel(e)}</span>
-                  <span className="muted small nowrap">{time(e.at)}</span>
+                <li key={e.id} className="ev-item">
+                  <div className="ev-head">
+                    <span className={`ev ev-${EV_TONE[e.kind] ?? 'etc'}`}>{e.kind}</span>
+                    <time className="ev-time" dateTime={e.at}>{time(e.at)}</time>
+                  </div>
+                  <p className="ev-text">{eventLabel(e)}</p>
                 </li>
               ))}
             </ul>
