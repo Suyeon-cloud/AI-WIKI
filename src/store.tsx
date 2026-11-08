@@ -18,7 +18,7 @@ import { cloudRepository } from './lib/cloud-repository';
 import { authUser, signOut } from './lib/auth';
 import { buildBackup } from './lib/data';
 import { downloadFile } from './lib/utils';
-import { saveRecovery, clearRecovery, loadRecovery, recoveryKey, type RecoveryCopy } from './lib/idb-store';
+import { saveRecovery, clearRecovery, loadRecovery, recoveryKey, loadRecoveryAcks, saveRecoveryAcks, visibleRecovery, nextRecoveryAcks, type RecoveryAck, type RecoveryCopy } from './lib/idb-store';
 import { emptyThesis } from './lib/projects';
 import { bibStatusOf } from './lib/citation';
 
@@ -193,15 +193,18 @@ export function StoreProvider({ children, userId }: { children: ReactNode; userI
   const [loaded, setLoaded] = useState<{ engine: CloudState; state: AppState } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [recovery, setRecovery] = useState<RecoveryCopy[]>([]);
+  const [recovery, setRecovery] = useState<{ all: RecoveryCopy[]; visible: RecoveryCopy[]; acks: RecoveryAck[] }>({ all: [], visible: [], acks: [] });
   const [continueAfterRecovery, setContinueAfterRecovery] = useState(false);
+  const [ackError, setAckError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     setLoaded(null);
     setError(null);
+    setAckError(null);
     const engine = new CloudState(cloudRepository, userId, () => alive && authUser()?.id === userId);
-    void Promise.all([engine.load(), loadRecovery(userId).catch(() => [])]).then(([state, copies]) => {
-      if (alive) { setRecovery(copies); setLoaded({ engine, state: state ?? initial() }); }
+    // 확인 기록을 읽지 못하면 기록이 없는 것으로 보고 모든 사본을 안내한다.
+    void Promise.all([engine.load(), loadRecovery(userId).catch(() => []), loadRecoveryAcks(userId).catch(() => [])]).then(([state, copies, acks]) => {
+      if (alive) { setRecovery({ all: copies, visible: visibleRecovery(copies, acks), acks }); setLoaded({ engine, state: state ?? initial() }); }
     }).catch((e) => { if (alive) setError(e instanceof Error ? e.message : '자료를 불러오지 못했습니다.'); });
     return () => { alive = false; };
   }, [userId, attempt]);
@@ -212,10 +215,20 @@ export function StoreProvider({ children, userId }: { children: ReactNode; userI
     <button className="btn" onClick={() => { void signOut().catch(() => setError('로그아웃하지 못했습니다. 다시 시도해 주세요.')); }}>로그아웃</button>
   </div></div>;
   if (!loaded) return <div className="boot-loading">내 계정의 자료를 불러오는 중…</div>;
-  if (recovery.length && !continueAfterRecovery) return <div className="login-screen"><div className="login-card">
+  const acknowledge = () => {
+    setAckError(null);
+    saveRecoveryAcks(userId, nextRecoveryAcks(recovery.acks, recovery.visible, recovery.all)).then(
+      () => setContinueAfterRecovery(true),
+      () => setAckError('확인 기록을 저장하지 못했습니다. 사본은 그대로 있고, 다음에 다시 안내됩니다. "서버 자료로 계속하기"로 이번에는 넘어갈 수 있습니다.'),
+    );
+  };
+  if (recovery.visible.length && !continueAfterRecovery) return <div className="login-screen"><div className="login-card">
     <h1>저장되지 않은 내용이 있어요</h1><p>이 계정으로 작업하다 서버에 저장하지 못한 사본입니다. 먼저 다운로드해 보관해 주세요. 사본은 자동으로 서버에 올리지 않습니다.</p>
-    {recovery.map((copy, i) => <p key={copy.key}><button className="btn" onClick={() => downloadFile(`ai-wiki-recovery-${i + 1}.json`, JSON.stringify(buildBackup(copy.state), null, 2), 'application/json')}>{copy.savedAt} 사본 다운로드</button></p>)}
+    {recovery.visible.map((copy, i) => <p key={copy.key}><button className="btn" onClick={() => downloadFile(`ai-wiki-recovery-${i + 1}.json`, JSON.stringify(buildBackup(copy.state), null, 2), 'application/json')}>{copy.savedAt} 사본 다운로드</button></p>)}
     <button className="btn btn-primary" onClick={() => setContinueAfterRecovery(true)}>서버 자료로 계속하기</button>
+    <button className="btn" onClick={acknowledge}>확인했어요, 다시 표시하지 않기</button>
+    <p className="muted small">다시 표시하지 않아도 사본은 이 브라우저에 그대로 남습니다. 새로 생기거나 다시 저장된 사본은 다시 안내합니다.</p>
+    {ackError && <p role="alert">{ackError}</p>}
   </div></div>;
   return <CloudStore engine={loaded.engine} boot={loaded.state}>{children}</CloudStore>;
 }

@@ -70,6 +70,27 @@ export async function loadRecovery(userId: string): Promise<RecoveryCopy[]> {
     .map((key) => run<RecoveryCopy>('readonly', (s) => s.get(key))));
   return copies.filter((copy) => copy?.state).sort((a, b) => b.savedAt.localeCompare(a.savedAt));
 }
+// Acknowledging a copy only hides the reminder; the copy itself stays stored.
+export interface RecoveryAck { key: string; savedAt: string }
+export const recoveryAckKey = (userId: string) => `ai-wiki:recovery-ack:${userId}`;
+/** 확인 기록과 key·savedAt이 모두 같은 사본만 숨긴다 (새 사본, 다시 저장된 사본은 다시 안내) */
+export const visibleRecovery = (copies: RecoveryCopy[], acks: RecoveryAck[]) =>
+  copies.filter((c) => !acks.some((a) => a.key === c.key && a.savedAt === c.savedAt));
+/** 아직 남아 있는 사본의 확인 기록만 유지하고, 방금 확인한 사본을 더한다 */
+export function nextRecoveryAcks(previous: RecoveryAck[], acked: RecoveryCopy[], existing: RecoveryCopy[]): RecoveryAck[] {
+  const present = new Set(existing.map((c) => c.key));
+  const replaced = new Set(acked.map((c) => c.key));
+  return [...previous.filter((a) => present.has(a.key) && !replaced.has(a.key)), ...acked.map(({ key, savedAt }) => ({ key, savedAt }))];
+}
+const isAck = (a: unknown): a is RecoveryAck =>
+  !!a && typeof (a as RecoveryAck).key === 'string' && typeof (a as RecoveryAck).savedAt === 'string';
+export async function loadRecoveryAcks(userId: string): Promise<RecoveryAck[]> {
+  const value = await run<unknown>('readonly', (s) => s.get(recoveryAckKey(userId)));
+  return Array.isArray(value) ? value.filter(isAck) : [];
+}
+export async function saveRecoveryAcks(userId: string, acks: RecoveryAck[]): Promise<void> {
+  await run('readwrite', (s) => s.put(acks, recoveryAckKey(userId)));
+}
 export async function clearRecovery(key: string, version: number): Promise<void> {
   const db = await open();
   try {

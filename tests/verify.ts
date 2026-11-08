@@ -14,6 +14,7 @@ import { materialToMarkdown, markdownToHtml } from '../src/lib/utils';
 import { checkBib, formatCitation, sameAuthorYear, segsToHtml, segsToText, sortForStyle, type CitationStyle } from '../src/lib/citation';
 import { CORRUPT_PREFIX, LEGACY_KEY_V1, STORAGE_KEY, loadState, saveState, type StorageLike } from '../src/lib/persist';
 import { DEFAULT_WRITING, SAMPLE_MATERIALS } from '../src/data/sample';
+import { nextRecoveryAcks, recoveryAckKey, recoveryKey, visibleRecovery, type RecoveryCopy } from '../src/lib/idb-store';
 import type { AppState, Bib, Material } from '../src/types';
 import obsidianNote from './fixtures/obsidian-real-note.md';
 import v1Storage from './fixtures/v1-storage.json';
@@ -338,12 +339,34 @@ function citationTests() {
   eq(sameAuthorYear([mat(journalBib, { id: 'a' }), mat(journalBib, { id: 'b' })]), ['Mayer, Richard E.; Moreno, Roxana (2003)'], '같은 저자·연도 자료 감지 (2003a/b 안내용)');
 }
 
+function recoveryAckTests() {
+  console.log('\n[6] 복구 사본 확인 기록');
+  const copy = (user: string, id: string, savedAt: string) => ({ key: recoveryKey(user, id), version: 1, savedAt, state: {} as AppState }) as RecoveryCopy;
+  const a1 = copy('user-a', 'tab1', '2026-11-08T05:00:00.000Z');
+  const a2 = copy('user-a', 'tab2', '2026-11-08T06:00:00.000Z');
+  eq(visibleRecovery([a1, a2], []).map((c) => c.key), [a1.key, a2.key], '확인 기록이 없으면(읽기 실패 포함) 모든 사본을 안내');
+  const acks = nextRecoveryAcks([], [a1, a2], [a1, a2]);
+  eq(visibleRecovery([a1, a2], acks), [], '확인한 사본은 안내에서 제외');
+  const a1Again = { ...a1, savedAt: '2026-11-08T07:00:00.000Z' };
+  eq(visibleRecovery([a1Again, a2], acks).map((c) => c.key), [a1.key], '같은 사본이 다시 저장되면(savedAt 변경) 다시 안내');
+  const a3 = copy('user-a', 'tab3', '2026-11-08T08:00:00.000Z');
+  eq(visibleRecovery([a1, a2, a3], acks).map((c) => c.key), [a3.key], '새로 생긴 사본은 안내');
+  eq(nextRecoveryAcks(acks, [a3], [a2, a3]), [{ key: a2.key, savedAt: a2.savedAt }, { key: a3.key, savedAt: a3.savedAt }], '이미 없어진 사본의 기록은 정리하고 남은 사본의 기록은 유지');
+  eq(nextRecoveryAcks(acks, [a1Again], [a1Again, a2]), [{ key: a2.key, savedAt: a2.savedAt }, { key: a1.key, savedAt: a1Again.savedAt }], '다시 확인하면 새 savedAt으로 바뀜(중복 기록 없음)');
+  ok(recoveryAckKey('user-a') !== recoveryAckKey('user-b'), '확인 기록은 계정마다 따로 저장');
+  const b1 = copy('user-b', 'tab1', a1.savedAt);
+  eq(visibleRecovery([b1], acks).map((c) => c.key), [b1.key], '다른 계정의 확인 기록은 적용되지 않음');
+  ok(!recoveryAckKey('user-a').startsWith('ai-wiki:cloud-draft:user-a:'), '확인 기록 키는 복구 사본으로 읽히지 않음');
+  ok(acks.every((a) => !('state' in a)), '확인 기록에는 key·savedAt만 저장(사본 내용 복제 없음)');
+}
+
 (async () => {
   await storageTests();
   await backupTests();
   await planTests();
   await markdownTests();
   citationTests();
+  recoveryAckTests();
   console.log(`\n${failed ? '실패' : '모두 통과'}: ${passed}건 통과, ${failed}건 실패`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => {
