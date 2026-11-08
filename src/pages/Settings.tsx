@@ -86,7 +86,7 @@ export function Settings() {
           </Card>
           <AiSettings />
           <ObsidianSync />
-          <DriveSync />
+          <div id="drive-settings"><DriveSync /></div>
         </div>
 
         <div>

@@ -5,7 +5,7 @@ import { useConnections } from '../components/Sidebar';
 import { hasMyView } from '../types';
 
 /** 동작 흐름도: 프로젝트 → 자료 수집 → 라이브러리 → AI 분석 → 참고문헌 → AI 집필 → HWPX 출력·저장, 아래는 외부 저장소 */
-function FlowDiagram({ go }: { go: (p: PageKey) => void }) {
+export function FlowDiagram({ go }: { go: (p: PageKey) => void }) {
   const steps: { no: string; title: string; sub: string; page: PageKey }[] = [
     { no: '①', title: '프로젝트', sub: '논문 주제 단위', page: 'dashboard' },
     { no: '②', title: '자료 수집', sub: 'KCI 검색 · 논문 PDF', page: 'collect' },

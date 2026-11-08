@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import { authState, initializeAuth, subscribeAuth } from './lib/auth';
 import { StoreProvider } from './store';
 import { refreshAi } from './lib/ai';
-import { LoginScreen } from './components/LoginScreen';
+import { GuestApp } from './components/GuestApp';
 import type { PageKey, Project } from './types';
-import { NAV, Sidebar } from './components/Sidebar';
+import { pageFromHash as fromHash, Sidebar } from './components/Sidebar';
 import { Toasts } from './components/ui';
+import { Footer } from './components/Footer';
+import { TopBar } from './components/TopBar';
 import { NavContext, ProjectDialog } from './components/ProjectDialog';
 import { Home } from './pages/Home';
 import { Dashboard } from './pages/Dashboard';
@@ -16,16 +18,12 @@ import { Writing } from './pages/Writing';
 import { References } from './pages/References';
 import { Settings } from './pages/Settings';
 
-const fromHash = (): PageKey => {
-  const h = window.location.hash.slice(1) as PageKey;
-  return NAV.some((n) => n.key === h) ? h : 'home';
-};
-
 export default function App() {
   const auth = useSyncExternalStore(subscribeAuth, authState);
   useEffect(() => { void initializeAuth(); }, []);
   if (!auth.ready) return <div className="boot-loading">로그인 확인 중…</div>;
-  if (!auth.user) return <LoginScreen errorMessage={auth.error} />;
+  // 로그인 전: 계정 저장소(StoreProvider)를 만들지 않는 소개 화면만 보여 준다
+  if (!auth.user) return <GuestApp errorMessage={auth.error} />;
   return <StoreProvider key={auth.user.id} userId={auth.user.id}><Workspace /></StoreProvider>;
 }
 
@@ -57,6 +55,7 @@ function Workspace() {
       <div className="app">
         <Sidebar page={page} onNavigate={go} />
         <main className="main">
+          <TopBar onNavigate={go} />
           <div className="main-inner">
             {page === 'home' && <Home />}
             {page === 'dashboard' && <Dashboard />}
@@ -67,6 +66,7 @@ function Workspace() {
             {page === 'references' && <References />}
             {page === 'settings' && <Settings />}
           </div>
+          <Footer />
         </main>
         {dialog && <ProjectDialog edit={dialog.edit} onClose={() => setDialog(null)} />}
         <Toasts />

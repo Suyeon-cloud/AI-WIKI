@@ -1,5 +1,5 @@
-import { useEffect, useReducer, useSyncExternalStore } from 'react';
-import { authUser, signOut, subscribeAuth } from '../lib/auth';
+import { useEffect, useReducer } from 'react';
+import { signOut } from '../lib/auth';
 import type { PageKey } from '../types';
 import { useStore, useProject } from '../store';
 import { aiState, subscribeAi } from '../lib/ai';
@@ -18,6 +18,12 @@ export const NAV: { key: PageKey; label: string; icon: string; step?: number }[]
   { key: 'settings', label: '연구 설정', icon: '⚙' },
 ];
 
+/** 주소의 #화면 이름 → 화면 (없거나 모르는 이름이면 시작하기) */
+export const pageFromHash = (): PageKey => {
+  const h = window.location.hash.slice(1) as PageKey;
+  return NAV.some((n) => n.key === h) ? h : 'home';
+};
+
 /** 외부 연결 상태가 바뀌면 다시 그린다 */
 export function useConnections() {
   const [, rerender] = useReducer((x: number) => x + 1, 0);
@@ -29,12 +35,20 @@ export function useConnections() {
   return { ai: aiState().configured, drive: driveState().status === 'connected', obsidian: !!v.handle && v.granted, vaultName: v.handle?.name };
 }
 
+/** 로그아웃 — 서버 저장이 끝나기 전에는 막는다 */
+export function useSignOut() {
+  const { pendingSave, toast } = useStore();
+  return () => {
+    if (pendingSave) { toast('저장이 끝난 뒤 로그아웃해 주세요. 저장 오류가 있다면 먼저 전체 백업을 받아 주세요.', 'error'); return; }
+    void signOut().catch((e) => toast(e instanceof Error ? e.message : '로그아웃 오류', 'error'));
+  };
+}
+
 export function Sidebar({ page, onNavigate }: { page: PageKey; onNavigate: (p: PageKey) => void }) {
-  const { state, dispatch, pendingSave, toast } = useStore();
+  const { state, dispatch } = useStore();
   const { project, materials } = useProject();
   const nav = useNav();
   const c = useConnections();
-  const user = useSyncExternalStore(subscribeAuth, authUser);
 
   return (
     <aside className="sidebar">
@@ -86,19 +100,6 @@ export function Sidebar({ page, onNavigate }: { page: PageKey; onNavigate: (p: P
       </nav>
 
       <div className="sidebar-foot">
-        {user && (
-          <div className="account-box">
-            {user.picture ? <img src={user.picture} alt="" referrerPolicy="no-referrer" /> : <span className="account-initial">{user.name.slice(0, 1)}</span>}
-            <div className="account-text">
-              <b>{user.name}</b>
-              <span>{user.email}</span>
-            </div>
-            <button className="link small" onClick={() => {
-              if (pendingSave) { toast('저장이 끝난 뒤 로그아웃해 주세요. 저장 오류가 있다면 먼저 전체 백업을 받아 주세요.', 'error'); return; }
-              void signOut().catch((e) => toast(e instanceof Error ? e.message : '로그아웃 오류', 'error'));
-            }}>로그아웃</button>
-          </div>
-        )}
         <div className="conn-list">
           <button className={`conn ${c.ai ? 'on' : ''}`} onClick={() => onNavigate('settings')} title="Claude 서버 연결 설정">
             <i /> Claude AI {c.ai ? '연결됨' : '설정 필요'}

@@ -650,7 +650,38 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 .modal .form-grid .req { margin-left: 2px; }
 
 /* ───────── 로그인 화면 · 계정 표시 ───────── */
-.login-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #23395d 0%, #2f5d9c 100%); }
+.login-screen { min-height: 100vh; display: grid; grid-template-rows: 1fr auto; place-items: center; padding: 24px; background: linear-gradient(135deg, #23395d 0%, #2f5d9c 100%); }
+
+/* ───────── 본문 오른쪽 위: Drive 연결 · 계정 ───────── */
+.topbar { display: flex; justify-content: flex-end; align-items: center; gap: 8px; max-width: 1360px; margin: 0 auto; padding: 14px 36px 0; }
+.topbar .conn { width: auto; flex: 0 0 auto; }
+.topbar .account-box { margin-bottom: 0; max-width: 340px; padding: 5px 10px; }
+@media (max-width: 860px) {
+  .topbar { flex-wrap: wrap; padding: 12px 16px 0; }
+  .topbar .account-box { flex: 1 1 220px; max-width: none; }
+}
+
+/* ───────── 로그인 전 둘러보기 ───────── */
+.login-google.login-google-inline { width: auto; padding: 8px 14px; font-size: 13px; }
+.guest-box-text { margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: var(--muted); word-break: keep-all; }
+.guest-grid { margin-bottom: 16px; }
+.guest-card { display: flex; flex-direction: column; gap: 6px; margin: 0; text-align: left; cursor: pointer; font: inherit; color: var(--text); }
+.guest-card:hover { border-color: var(--accent); background: var(--accent-soft); }
+.guest-card span { font-size: 13px; line-height: 1.6; color: var(--muted); word-break: keep-all; }
+.guest-points { margin: 0; padding-left: 18px; line-height: 1.9; word-break: keep-all; }
+.guest-login-card p { margin: 0 0 12px; }
+.topbar .login-error { margin: 0; }
+
+/* ───────── 공통 Footer ───────── */
+.site-footer { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.site-footer strong { color: var(--text); font-weight: 600; }
+/* 앱 화면: 본문 아래. 오른쪽 아래에 떠 있는 저장 상태 표시와 겹치지 않도록 아래 여백을 둔다 */
+.site-footer-app { max-width: 1360px; margin: 0 auto; padding: 16px 36px 72px; border-top: 1px solid var(--line); }
+.site-footer-login { flex-direction: column; align-items: center; gap: 0; padding-top: 24px; text-align: center; color: rgba(255, 255, 255, 0.75); }
+.site-footer-login strong { color: #fff; }
+@media (max-width: 860px) {
+  .site-footer-app { flex-direction: column; gap: 0; padding: 16px 16px 96px; }
+}
 .login-card { width: min(420px, 100%); padding: 36px 32px; text-align: center; background: var(--panel); border-radius: 16px; box-shadow: 0 18px 48px rgba(15, 25, 45, 0.3); }
 .login-mark { width: 52px; height: 52px; margin: 0 auto 12px; border-radius: 12px; font-size: 18px; }
 .login-card h1 { font-size: 24px; }
