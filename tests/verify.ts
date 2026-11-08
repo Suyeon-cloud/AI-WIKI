@@ -15,6 +15,8 @@ import { checkBib, formatCitation, sameAuthorYear, segsToHtml, segsToText, sortF
 import { CORRUPT_PREFIX, LEGACY_KEY_V1, STORAGE_KEY, loadState, saveState, type StorageLike } from '../src/lib/persist';
 import { DEFAULT_WRITING, SAMPLE_MATERIALS } from '../src/data/sample';
 import { nextRecoveryAcks, recoveryAckKey, recoveryKey, visibleRecovery, type RecoveryCopy } from '../src/lib/idb-store';
+import { checkCitations, extractCitations, matchCitation } from '../src/lib/cite-check';
+import { normalizeThesis } from '../src/lib/projects';
 import type { AppState, Bib, Material } from '../src/types';
 import obsidianNote from './fixtures/obsidian-real-note.md';
 import v1Storage from './fixtures/v1-storage.json';
@@ -360,6 +362,57 @@ function recoveryAckTests() {
   ok(acks.every((a) => !('state' in a)), '확인 기록에는 key·savedAt만 저장(사본 내용 복제 없음)');
 }
 
+function citeCheckTests() {
+  console.log('\n[7] 본문 인용 점검');
+  const m = (id: string, authors: string[], year: string): Material =>
+    ({ ...normalizeMaterial({ id, title: `자료 ${id}`, sourceType: 'PDF' })!, bib: { author: authors.join('; '), authors, year, publisher: '' } }) as Material;
+  const mats = [
+    m('hong', ['홍길동'], '2020'),
+    m('mayer', ['Mayer, Richard E.', 'Moreno, Roxana'], '2003'),
+    m('smith', ['Smith, J.', 'Doe, A.', 'Roe, B.'], '2021'),
+    m('wang', ['王小明'], '2018'),
+    m('kim1', ['Kim, Minsu'], '2019'),
+    m('lee-a', ['Lee, Ara'], '2023a'),
+    m('lee-b', ['Lee, Ara'], '2023b'),
+    m('park1', ['박지민'], '2022'),
+    m('park2', ['박지민'], '2022'),
+  ];
+  const one = (text: string) => extractCitations(text).map((c) => matchCitation(c, mats));
+  const ids = (text: string) => one(text).map((c) => `${c.status}:${c.ids.join('+')}`);
+
+  eq(ids('선행연구가 있다(홍길동, 2020).'), ['matched:hong'], '괄호형 한글 인용');
+  eq(ids('홍길동(2020)은 이를 지적했다.'), ['matched:hong'], '서술형 한글 인용');
+  eq(ids('(홍길동 외, 2020)'), ['matched:hong'], "'외' 인용");
+  eq(ids('(Mayer & Moreno, 2003)'), ['matched:mayer'], '영문 두 저자 괄호형');
+  eq(ids('Smith et al. (2021) found'), ['matched:smith'], '영문 et al. 서술형');
+  eq(ids('王小明(2018)指出'), ['matched:wang'], '중국어 서술형');
+  eq(ids('(王小明 等, 2018)'), ['matched:wang'], '중국어 等 괄호형');
+  eq(ids('(Kim, 2019, p. 12)'), ['matched:kim1'], '쪽 번호가 붙은 인용');
+  eq(ids('(홍길동, 2020; Kim, 2019)'), ['matched:hong', 'matched:kim1'], '한 괄호 안 여러 인용');
+  eq(ids('(Lee, 2023b)'), ['matched:lee-b'], '2023a/b 표기가 자료와 일치하면 연결');
+  eq(one('(박지민, 2022)').map((c) => c.status), ['ambiguous'], '같은 저자·연도 자료가 여럿이면 확인 필요 (동명 저자)');
+  eq(one('(박지민, 2022a)').map((c) => c.status), ['ambiguous'], '2022a로 인용했지만 자료에 a/b 표기가 없으면 확인 필요');
+  eq(one('(홍길동, 2019)').map((c) => [c.status, !!c.note]), [['unmatched', true]], '저자는 있으나 연도가 다르면 연결하지 않고 이유 표시');
+  eq(one('(박영희, 2015)').map((c) => c.status), ['unmatched'], '목록에 없는 저자는 연결되지 않음');
+  eq(extractCitations('2020년 기준(2020년)으로 집계했다(N=120).').length, 0, '연도만 있는 괄호·숫자 괄호는 인용으로 보지 않음');
+
+  const chapters = [
+    { id: 'c1', title: 'Ⅰ. 서론', sections: [], text: '홍길동(2020)은 … (Mayer & Moreno, 2003). 선행연구(2020)에 따르면 … (박영희, 2015) (박지민, 2022)', citedIds: ['hong', 'smith'] },
+    { id: 'c2', title: 'Ⅱ. 이론', sections: [], text: 'Smith et al. (2021)' },
+  ];
+  const refIds = new Set(['hong', 'smith', 'wang', 'park1']);
+  const basisIds = new Set(['hong', 'smith', 'wang', 'park1', 'mayer']);
+  const r = checkCitations(chapters, mats, refIds, basisIds);
+  eq(r.citedNotInRefs.map((x) => [x.material.id, x.reason]), [['mayer', '서지 미완성']], '본문에 인용됐지만 참고문헌에 없는 자료와 이유');
+  eq(r.refsNotCited.map((x) => x.id), ['wang'], '참고문헌에만 있는 자료 (후보로 걸린 자료는 단정하지 않음)');
+  eq(r.unmatched.map((c) => c.raw), ['(박영희, 2015)'], '자료와 연결되지 않는 괄호형 인용');
+  eq(r.needsCheck.map((c) => c.status).sort(), ['ambiguous', 'unmatched'], "서술형 비인용 의심('선행연구(2020)')과 동명 저자는 확인 필요");
+  eq(r.aiMismatch.map((x) => [x.chapterId, x.missingInText.map((y) => y.id), x.notInAi.map((y) => y.id)]), [['c1', ['smith'], ['mayer']]], 'AI 인용 기록과 본문 차이 (기록이 있는 장만)');
+
+  const loaded = normalizeThesis({ projectId: 'p', titleKo: 't', chapters: [{ id: 'a', title: 'Ⅰ', text: 'x', citedIds: ['hong'] }, { id: 'b', title: 'Ⅱ', text: 'y' }] });
+  eq(loaded?.chapters.map((c) => c.citedIds), [['hong'], undefined], '장별 citedIds는 저장·복원되고, 이전 원고는 필드 없이 그대로');
+}
+
 (async () => {
   await storageTests();
   await backupTests();
@@ -367,6 +420,7 @@ function recoveryAckTests() {
   await markdownTests();
   citationTests();
   recoveryAckTests();
+  citeCheckTests();
   console.log(`\n${failed ? '실패' : '모두 통과'}: ${passed}건 통과, ${failed}건 실패`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => {

@@ -109,7 +109,7 @@ export function normalizeAiOutput(x: unknown): AiOutput | null {
 
 function normalizeChapter(x: unknown): ThesisChapter | null {
   if (!isObj(x) || !nonEmpty(x.title)) return null;
-  return { id: nonEmpty(x.id) ?? uid(), title: x.title as string, sections: strArr(x.sections), text: str(x.text) ?? '' };
+  return { id: nonEmpty(x.id) ?? uid(), title: x.title as string, sections: strArr(x.sections), text: str(x.text) ?? '', ...(Array.isArray(x.citedIds) ? { citedIds: strArr(x.citedIds) } : {}) };
 }
 
 export function emptyThesis(p: Project): ThesisDraft {

@@ -6,6 +6,7 @@ import JOURNAL_SKILL_MD from '../../.claude/skills/journal-article-writing/SKILL
 import { AI_MODEL_LABEL, AiError, generate } from '../lib/ai';
 import { buildThesisHwpx, sectionsOf, type ThesisDoc } from '../lib/hwpx';
 import { checkBib, formatCitation, segsToText, sortForStyle } from '../lib/citation';
+import { checkCitations, type CiteReport } from '../lib/cite-check';
 import { downloadFile, safeFileName, uid } from '../lib/utils';
 import { ABSTRACT_SCHEMA, CHAPTER_SCHEMA, OUTLINE_SCHEMA, thesisContext } from '../lib/prompts';
 import { saveOutputToDrive } from '../lib/sync';
@@ -67,6 +68,11 @@ export function Writing() {
   }, [project?.id]);
 
   const basis = useMemo(() => materials.filter((m) => t?.materialIds.includes(m.id)), [materials, t?.materialIds]);
+  // 인용 점검: 참고문헌 = 출력에 들어가는 목록(근거 자료 중 서지 완성)과 같은 기준
+  const citeReport = useMemo(
+    () => (t ? checkCitations(t.chapters, materials, new Set(basis.filter((m) => checkBib(m).complete).map((m) => m.id)), new Set(basis.map((m) => m.id))) : null),
+    [t?.chapters, materials, basis],
+  );
   const insights = outputs.filter((o) => o.kind === '전체 분석');
 
   if (!project || !t)
@@ -164,7 +170,7 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
         schema: CHAPTER_SCHEMA,
         maxTokens: 32000,
       });
-      setChapter(c.id, { text: data.text });
+      setChapter(c.id, { text: data.text, citedIds: data.citedIds });
       setTodo((x) => ({ ...x, [c.id]: data.todo }));
       dispatch({
         type: 'addOutput',
@@ -459,6 +465,8 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
             </div>
           </Card>
 
+          {citeReport && <CiteCheckCard report={citeReport} chapters={t.chapters} onFix={() => nav.go('references')} />}
+
           <Card title={isJournal ? '출력 — 학술지 투고 원고 HWPX' : '출력 — 한국외대 학위논문 서식 HWPX'}>
             <ol className="export-steps">
               {isJournal ? (
@@ -493,5 +501,60 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
         </div>
       </div>
     </>
+  );
+}
+
+/** 본문 인용 ↔ 참고문헌 점검 결과. 확인용 경고만 보여 주고 출력은 막지 않는다. */
+function CiteCheckCard({ report: r, chapters, onFix }: { report: CiteReport; chapters: ThesisChapter[]; onFix: () => void }) {
+  const chapterTitle = (id: string) => chapters.find((c) => c.id === id)?.title ?? '';
+  const issues = r.citedNotInRefs.length + r.refsNotCited.length + r.unmatched.length + r.needsCheck.length + r.aiMismatch.length;
+  if (!chapters.some((c) => c.text.trim())) return null;
+  return (
+    <Card title="인용 점검" extra={<span className="muted small">확인용 — 출력은 막지 않습니다</span>}>
+      <p className="small">
+        본문 인용 {r.citations.length}건 · 자료와 연결 {r.citations.filter((c) => c.status === 'matched').length}건
+        {issues ? <span className="warn-tag">확인할 항목 {issues}건</span> : <span className="ok-tag">발견된 문제 없음</span>}
+      </p>
+      {r.citedNotInRefs.length > 0 && (
+        <details className="cite-check" open>
+          <summary>본문에 인용됐지만 참고문헌에 없는 자료 {r.citedNotInRefs.length}건</summary>
+          <ul>{r.citedNotInRefs.map(({ material, reason }) => <li key={material.id}>{material.title} <span className="muted small">— {reason}</span></li>)}</ul>
+          <button className="link small" onClick={onFix}>참고문헌에서 보완</button>
+        </details>
+      )}
+      {r.refsNotCited.length > 0 && (
+        <details className="cite-check">
+          <summary>참고문헌에만 있는 자료 {r.refsNotCited.length}건 (본문 인용을 찾지 못함)</summary>
+          <ul>{r.refsNotCited.map((m) => <li key={m.id}>{m.title}</li>)}</ul>
+        </details>
+      )}
+      {r.unmatched.length > 0 && (
+        <details className="cite-check">
+          <summary>자료와 연결되지 않는 인용 {r.unmatched.length}건</summary>
+          <ul>{r.unmatched.map((c, i) => <li key={i}>{c.raw} <span className="muted small">— {chapterTitle(c.chapterId)}{c.note ? ` · ${c.note}` : ''}</span></li>)}</ul>
+        </details>
+      )}
+      {r.needsCheck.length > 0 && (
+        <details className="cite-check">
+          <summary>확인 필요 {r.needsCheck.length}건 (후보가 여럿이거나 인용인지 불확실)</summary>
+          <ul>{r.needsCheck.map((c, i) => <li key={i}>{c.raw} <span className="muted small">— {chapterTitle(c.chapterId)} · {c.note ?? (c.status === 'unmatched' ? '해당 자료를 찾지 못함 (인용이 아닐 수 있음)' : '확인 필요')}</span></li>)}</ul>
+        </details>
+      )}
+      {r.aiMismatch.length > 0 && (
+        <details className="cite-check">
+          <summary>AI 인용 기록과 본문이 다른 장 {r.aiMismatch.length}개</summary>
+          <ul>
+            {r.aiMismatch.map((x) => (
+              <li key={x.chapterId}>
+                <b>{x.chapterTitle}</b>
+                {x.missingInText.length > 0 && <div className="small">AI가 인용했다고 했지만 본문에서 찾지 못함: {x.missingInText.map((m) => m.title).join(', ')}</div>}
+                {x.notInAi.length > 0 && <div className="small">본문에 있지만 AI 기록에 없음: {x.notInAi.map((m) => m.title).join(', ')}</div>}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      <p className="muted small">인용은 첫 저자와 연도로 찾습니다. 저자 표기가 다르거나 확실하지 않은 경우는 추측하지 않고 '확인 필요'로 둡니다.</p>
+    </Card>
   );
 }

@@ -197,6 +197,7 @@ export interface ThesisChapter {
   title: string; // 'Ⅰ. 서론'
   sections: string[]; // '1. 연구의 필요성 및 목적'
   text: string; // 본문 (절 제목은 '## 1. ...' 형식으로 포함)
+  citedIds?: string[]; // AI가 이 장을 쓸 때 인용했다고 알린 자료 id (없으면 기록 없음 — 이전 원고)
 }
 export interface ThesisDraft {
   projectId: string;

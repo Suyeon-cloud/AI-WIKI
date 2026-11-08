@@ -723,3 +723,8 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 .kci-key-box .io-row input { flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--line-2); border-radius: 6px; }
 .kci-key-box p { margin: 8px 0 0; line-height: 1.6; word-break: keep-all; }
 .kci-key-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+
+/* ───────── AI 집필 — 인용 점검 ───────── */
+.cite-check { margin: 8px 0; font-size: 13px; }
+.cite-check summary { cursor: pointer; font-weight: 600; }
+.cite-check ul { margin: 6px 0; padding-left: 18px; line-height: 1.7; word-break: keep-all; }
