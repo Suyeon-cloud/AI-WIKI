@@ -508,7 +508,12 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
 function CiteCheckCard({ report: r, chapters, onFix }: { report: CiteReport; chapters: ThesisChapter[]; onFix: () => void }) {
   const chapterTitle = (id: string) => chapters.find((c) => c.id === id)?.title ?? '';
   const issues = r.citedNotInRefs.length + r.refsNotCited.length + r.unmatched.length + r.needsCheck.length + r.aiMismatch.length;
-  if (!chapters.some((c) => c.text.trim())) return null;
+  if (!chapters.some((c) => c.text.trim()))
+    return (
+      <Card title="인용 점검">
+        <p className="muted small">본문을 작성하면 인용과 참고문헌의 일치 여부를 점검합니다.</p>
+      </Card>
+    );
   return (
     <Card title="인용 점검" extra={<span className="muted small">확인용 — 출력은 막지 않습니다</span>}>
       <p className="small">
