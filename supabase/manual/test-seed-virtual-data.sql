@@ -4,8 +4,8 @@
 -- 사용법: 'REPLACE_WITH_TEST_EMAIL' 두 곳을 테스트 계정 이메일로 바꿔 실행한다(두 값이 다르면 중단).
 -- 안전 장치(하나라도 걸리면 예외로 끝나고 아무것도 바뀌지 않는다):
 --   * 이메일과 정확히 일치하는 계정이 하나여야 한다.
---   * 그 계정의 자료가 모두 이 스크립트가 만든 가상 자료(id가 'virtual-'로 시작)이거나 0건이어야 한다.
---     실제 자료가 한 건이라도 있으면 덮어쓰지 않는다.
+--   * 그 계정의 materials가 빈 배열이어야 한다. 자료가 한 건이라도 있으면 id와 관계없이 중단한다
+--     (이미 가상 자료를 만든 계정도 다시 만들지 않는다).
 --   * 변경분 저장으로 이미 전환된 계정이면 중단한다.
 -- 자료 외의 내용(프로젝트·집필·기록·설정)은 그대로 두고 materials만 가상 자료로 바꾼다. revision을 올려 열린 탭은 충돌로 멈춘다.
 do $$
@@ -26,8 +26,8 @@ begin
   if v_state is null then raise exception '중단: 이 계정의 저장 행이 없습니다. 테스트 계정으로 앱에 한 번 로그인하세요.'; end if;
   if exists (select 1 from public.ai_wiki_user_meta where user_id = v_user) then raise exception '중단: 이미 변경분 저장으로 전환된 계정입니다.'; end if;
   if jsonb_typeof(v_state->'materials') is distinct from 'array' then raise exception '중단: materials 배열이 없습니다.'; end if;
-  if exists (select 1 from jsonb_array_elements(v_state->'materials') e where coalesce(e->>'id', '') not like 'virtual-%') then
-    raise exception '중단: 가상 자료가 아닌 자료가 있는 계정입니다. 실제 계정일 수 있어 덮어쓰지 않습니다.';
+  if jsonb_array_length(v_state->'materials') <> 0 then
+    raise exception '중단: 자료가 %건 있는 계정입니다. 자료가 0건인 테스트 계정에서만 실행합니다.', jsonb_array_length(v_state->'materials');
   end if;
 
   v_project := nullif(v_state->>'currentProjectId', '');

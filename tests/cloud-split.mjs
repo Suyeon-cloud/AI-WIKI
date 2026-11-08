@@ -391,11 +391,12 @@ console.log('PASS: restore needs the previewed revision, keeps the overwritten r
   await fresh.save(empty);
   await assert.rejects(seedSql(email[D], 'other@example.com'), /같게 입력/);
   const bBefore = await legacyRow(B);
-  await assert.rejects(seedSql(email[B]), /가상 자료가 아닌/);
+  await assert.rejects(seedSql(email[B]), /자료가 \d+건 있는 계정/);
   assert.deepEqual(await legacyRow(B), bBefore);
   await seedSql(email[D]);
-  await seedSql(email[D]);
   const seeded = await legacyRow(D);
+  await assert.rejects(seedSql(email[D]), /자료가 202건 있는 계정/, 'even virtual-only materials block a second run');
+  assert.deepEqual(await legacyRow(D), seeded);
   const bytes = Buffer.byteLength(JSON.stringify(seeded.state));
   assert.ok(bytes > 13_000_000 && bytes < 15_500_000, `about 14MB (${bytes})`);
   const loadedD = await engine(D).load();
@@ -413,5 +414,5 @@ console.log('PASS: restore needs the previewed revision, keeps the overwritten r
   assert.deepEqual((await engine(D).load()).materials, bulk.materials);
   assert.deepEqual(await legacyRow(B), bBefore);
 }
-console.log('PASS: virtual 14MB seed only for an exact test account with no real materials; migrates and saves in ~1MB chunks');
+console.log('PASS: virtual 14MB seed only for an exact test account whose materials are empty (any existing material, even virtual, aborts); migrates and saves in ~1MB chunks');
 await db.close();
