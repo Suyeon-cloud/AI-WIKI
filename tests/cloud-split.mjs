@@ -12,7 +12,7 @@ const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
 const C = '33333333-3333-4333-8333-333333333333';
 const email = { [A]: 'a@example.com', [B]: 'b@example.com', [C]: 'c@example.com' };
-await db.exec(`create role anon; create role authenticated;
+await db.exec(`create role anon; create role authenticated; create role service_role; create role authenticator;
 create schema auth; create table auth.users(id uuid primary key, email text);
 create function auth.uid() returns uuid language sql stable as
 $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
@@ -276,25 +276,73 @@ assert.deepEqual(await legacyRow(A), legacyBefore);
 assert.equal((await engine(A).load()).materials.length, legacyBefore.state.materials.length);
 console.log('PASS: rollback (discard) returns to the untouched pre-migration row');
 
-// ── 11. 서버 백업: 비공개 스키마, 앱 역할 접근 불가, 원본과 일치, 덮어쓰기 불가
+// ── 11. 서버 백업: 같은 스냅샷, 비공개 스키마, PUBLIC·앱 역할 권한 없음, Data API 노출 시 중단, 원본 무변경, 덮어쓰기 불가
+const allRows = () => query('admin', 'select user_id, state, revision::int as revision from public.ai_wiki_user_state order by user_id');
 {
+  const backupSql = await sql('manual/backup-user-state.sql');
+  assert.match(backupSql, /^begin isolation level repeatable read;/m, 'backup copies and verifies from one snapshot');
+  const originals = await allRows();
   await db.exec('reset role');
-  // Supabase처럼 새 테이블에 앱 역할 권한이 자동으로 붙는 상태를 흉내 낸다.
-  await db.exec('alter default privileges grant all on tables to anon, authenticated');
-  await db.exec(await sql('manual/backup-user-state.sql'));
-  await db.exec('alter default privileges revoke all on tables from anon, authenticated');
-  const total = (await query('admin', 'select count(*)::int as n from public.ai_wiki_user_state'))[0].n;
-  assert.equal((await query('admin', 'select count(*)::int as n from ai_wiki_backup.user_state_20261108'))[0].n, total);
+  // Data API가 백업 스키마를 노출하도록 설정돼 있으면 아무것도 만들지 않고 중단한다.
+  await db.exec("alter role authenticator set pgrst.db_schemas = 'public, graphql_public, ai_wiki_backup'");
+  await assert.rejects(db.exec(backupSql), /Data API/);
+  await db.exec('rollback');
+  assert.equal((await query('admin', "select count(*)::int as n from pg_namespace where nspname = 'ai_wiki_backup'"))[0].n, 0);
+  await db.exec("alter role authenticator set pgrst.db_schemas = 'public, graphql_public'");
+  // Supabase처럼 새 스키마·테이블에 PUBLIC과 앱 역할 권한이 자동으로 붙는 상태를 흉내 낸다.
+  await db.exec('alter default privileges grant all on tables to public, anon, authenticated, service_role');
+  await db.exec('alter default privileges grant usage, create on schemas to public, anon, authenticated, service_role');
+  await db.exec(backupSql);
+  await db.exec('alter default privileges revoke all on tables from public, anon, authenticated, service_role');
+  await db.exec('alter default privileges revoke usage, create on schemas from public, anon, authenticated, service_role');
+  assert.deepEqual(await allRows(), originals, 'every account row (including the 202-material one) is unchanged');
+  const copy = await query('admin', 'select user_id, state, revision::int as revision from ai_wiki_backup.user_state_20261108 order by user_id');
+  assert.deepEqual(copy, originals);
+  const leaks = await query('admin', `select r, p from unnest(array['public','anon','authenticated','service_role']) r,
+    unnest(array['select','insert','update','delete','truncate']) p
+    where has_table_privilege(r, 'ai_wiki_backup.user_state_20261108', p) or has_schema_privilege(r, 'ai_wiki_backup', 'usage')`);
+  assert.deepEqual(leaks, []);
   for (const who of [null, A]) {
     await as(who);
     await assert.rejects(db.query('select * from ai_wiki_backup.user_state_20261108'));
   }
   await db.exec('reset role');
-  await assert.rejects(db.exec(await sql('manual/backup-user-state.sql')), /already exists/);
+  await assert.rejects(db.exec(backupSql), /already exists/);
   await db.exec('rollback');
-  assert.equal((await query('admin', 'select count(*)::int as n from ai_wiki_backup.user_state_20261108'))[0].n, total);
+  assert.deepEqual(await query('admin', 'select user_id, state, revision::int as revision from ai_wiki_backup.user_state_20261108 order by user_id'), originals);
+  assert.deepEqual(await allRows(), originals);
 }
-console.log('PASS: backup lives in a private schema, matches the source, is unreadable by anon/authenticated and is never overwritten');
+console.log('PASS: backup uses one snapshot in a private schema, has no PUBLIC/anon/authenticated/service_role access, aborts if exposed to the Data API, never changes or overwrites data');
+
+// ── 11b. 수동 복원: 예상 revision이 맞을 때만, 직전 내용 보관, 다른 계정 무변경, 전환된 계정 거부
+{
+  const eA = engine(A);
+  const sA = await eA.load();
+  await eA.save({ ...sA, materials: sA.materials.slice(1) });
+  const live = await legacyRow(A);
+  const others = (await allRows()).filter((r) => r.user_id !== A);
+  const restoreSql = (await sql('manual/restore-user-state.sql')).replaceAll('REPLACE_WITH_EMAIL', email[A]);
+  const withRev = (r) => restoreSql.replace('v_expected_revision bigint := null', `v_expected_revision bigint := ${r}`);
+  await db.exec('reset role');
+  await assert.rejects(db.exec(restoreSql), /v_expected_revision/);
+  await assert.rejects(db.exec(withRev(live.revision - 1)), /미리보기 이후/);
+  assert.deepEqual(await legacyRow(A), live);
+  await db.exec(withRev(live.revision));
+  const backupA = (await query('admin', 'select state from ai_wiki_backup.user_state_20261108 where user_id=$1', [A]))[0].state;
+  const restored = await legacyRow(A);
+  assert.deepEqual(restored.state, backupA);
+  assert.equal(restored.revision, live.revision + 1);
+  const kept = await query('admin', 'select state, revision::int as revision from ai_wiki_backup.user_state_pre_restore where user_id=$1', [A]);
+  assert.deepEqual(kept, [{ state: live.state, revision: live.revision }]);
+  await assert.rejects(eA.save(sA), /conflict/, 'a tab opened before the restore cannot overwrite it');
+  assert.deepEqual((await allRows()).filter((r) => r.user_id !== A), others);
+  await admin('manual/split-migrate-user.sql', A);
+  await db.exec('reset role');
+  await assert.rejects(db.exec(withRev(restored.revision)), /전환된 계정/);
+  await admin('manual/split-rollback-user.sql', A);
+  assert.deepEqual(await legacyRow(A), restored);
+}
+console.log('PASS: restore needs the previewed revision, keeps the overwritten row, bumps the revision, touches only one account and refuses switched accounts');
 
 // ── 12. 테스트 계정 가상 자료: 실제 자료가 있는 계정은 거부, 약 14MB 생성, 전환·묶음 저장까지 동작
 {
