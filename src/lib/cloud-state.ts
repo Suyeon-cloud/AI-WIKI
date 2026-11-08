@@ -20,8 +20,10 @@ export interface StateRepository {
 }
 export type StorageMode = 'legacy' | 'split';
 
-// 한 번에 보내는 자료 묶음의 최대 크기(문자 수). 서버 처리 시간 제한(8초)보다 훨씬 작게 잡는다.
-const CHUNK_CHARS = 1_000_000;
+// 한 번에 보내는 자료 묶음의 최대 크기(UTF-8 바이트). 서버 처리 시간 제한(8초)보다 훨씬 작게 잡는다.
+// 한글은 1자가 3바이트라 문자 수가 아니라 바이트로 잰다.
+const CHUNK_BYTES = 1_000_000;
+const encoder = new TextEncoder();
 
 // The database compares revisions atomically, protecting newer data in other tabs.
 // Accounts are switched to split storage only by the manual SQL migration; this class never migrates.
@@ -32,7 +34,7 @@ export class CloudState {
   /** split 모드에서 서버에 마지막으로 저장된 자료 (같은 객체면 바뀌지 않은 것으로 본다) */
   private saved = new Map<string, { ref: Material; json: string }>();
   private savedMeta = '';
-  constructor(private repo: StateRepository, private userId: string, private isCurrent: () => boolean, private chunkChars = CHUNK_CHARS) {}
+  constructor(private repo: StateRepository, private userId: string, private isCurrent: () => boolean, private chunkBytes = CHUNK_BYTES) {}
   private checkOwner() { if (!this.isCurrent()) throw new Error('계정이 변경되어 저장을 중지했습니다.'); }
   private static checkRevision(revision: number) {
     if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('저장 버전을 확인하지 못했습니다. 원본은 변경하지 않았습니다.');
@@ -101,13 +103,13 @@ export class CloudState {
     if (!saveChanges) throw new Error('변경분 저장을 지원하지 않습니다.');
     const meta = CloudState.metaOf(state);
     const metaJson = JSON.stringify(meta);
-    const upserts: { position: number; data: Material; json: string }[] = [];
+    const upserts: { position: number; data: Material; json: string; bytes: number }[] = [];
     state.materials.forEach((m, position) => {
       const prev = this.saved.get(m.id);
       if (prev?.ref === m) return;
       const json = JSON.stringify(m);
       if (prev?.json === json) { prev.ref = m; return; }
-      upserts.push({ position, data: m, json });
+      upserts.push({ position, data: m, json, bytes: encoder.encode(json).length });
     });
     const live = new Set(state.materials.map((m) => m.id));
     const deletes = [...this.saved.keys()].filter((id) => !live.has(id));
@@ -117,9 +119,9 @@ export class CloudState {
     const chunks: (typeof upserts)[] = [[]];
     let size = 0;
     for (const u of upserts) {
-      if (size && size + u.json.length > this.chunkChars) { chunks.push([]); size = 0; }
+      if (size && size + u.bytes > this.chunkBytes) { chunks.push([]); size = 0; }
       chunks[chunks.length - 1].push(u);
-      size += u.json.length;
+      size += u.bytes;
     }
     for (let i = 0; i < chunks.length; i++) {
       const last = i === chunks.length - 1;

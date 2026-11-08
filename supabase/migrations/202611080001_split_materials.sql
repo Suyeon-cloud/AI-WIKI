@@ -45,6 +45,7 @@ using ((select auth.uid()) = user_id);
 
 -- Saves changed materials and the meta document in one transaction.
 -- p_upserts: [{ "position": number, "data": Material }], p_meta: null keeps the stored meta.
+-- SQL NULL and JSON null are treated the same (PostgREST may send either for a JSON null).
 -- A stale p_expected_revision raises PT409 (HTTP 409) and nothing is written.
 create function public.ai_wiki_save_changes(p_expected_revision bigint, p_meta jsonb, p_upserts jsonb, p_deletes text[])
 returns jsonb
@@ -54,20 +55,23 @@ set search_path = ''
 as $$
 declare
   v_uid uuid := auth.uid();
+  v_meta jsonb := nullif(p_meta, 'null'::jsonb);
+  v_upserts jsonb := coalesce(nullif(p_upserts, 'null'::jsonb), '[]'::jsonb);
+  v_deletes text[] := coalesce(p_deletes, '{}');
   v_revision bigint;
   v_count bigint;
 begin
   if v_uid is null then
     raise exception 'login required' using errcode = '28000';
   end if;
-  if p_meta is not null and (jsonb_typeof(p_meta) <> 'object' or p_meta ? 'materials') then
+  if v_meta is not null and (jsonb_typeof(v_meta) <> 'object' or v_meta ? 'materials') then
     raise exception 'invalid meta' using errcode = '22023';
   end if;
-  if jsonb_typeof(coalesce(p_upserts, '[]')) <> 'array' then
+  if jsonb_typeof(v_upserts) <> 'array' then
     raise exception 'invalid upserts' using errcode = '22023';
   end if;
   if exists (
-    select 1 from jsonb_array_elements(coalesce(p_upserts, '[]')) e
+    select 1 from jsonb_array_elements(v_upserts) e
     where jsonb_typeof(e->'data') is distinct from 'object'
        or coalesce(e->'data'->>'id', '') = ''
        or jsonb_typeof(e->'position') is distinct from 'number'
@@ -76,7 +80,7 @@ begin
   end if;
 
   update public.ai_wiki_user_meta
-     set revision = revision + 1, state = coalesce(p_meta, state)
+     set revision = revision + 1, state = coalesce(v_meta, state)
    where user_id = v_uid and revision = p_expected_revision
   returning revision into v_revision;
   if v_revision is null then
@@ -85,13 +89,13 @@ begin
 
   insert into public.ai_wiki_materials (user_id, id, position, data, updated_at, deleted_at)
   select v_uid, e->'data'->>'id', (e->>'position')::double precision, e->'data', now(), null
-    from jsonb_array_elements(coalesce(p_upserts, '[]')) e
+    from jsonb_array_elements(v_upserts) e
   on conflict (user_id, id) do update
      set position = excluded.position, data = excluded.data, updated_at = now(), deleted_at = null;
 
   update public.ai_wiki_materials
      set deleted_at = now(), updated_at = now()
-   where user_id = v_uid and id = any(coalesce(p_deletes, '{}')) and deleted_at is null;
+   where user_id = v_uid and id = any(v_deletes) and deleted_at is null;
 
   select count(*) into v_count from public.ai_wiki_materials where user_id = v_uid and deleted_at is null;
   return jsonb_build_object('revision', v_revision, 'count', v_count);

@@ -241,6 +241,19 @@ console.log('PASS: missing material rows fail closed');
 }
 console.log('PASS: a failed chunk keeps every material (old or new, never missing); meta waits for the last chunk; retry resumes; lost responses end in a conflict, not an overwrite');
 
+// ── 9c. 저장 함수는 SQL NULL과 JSON null을 같게 처리한다 (메타 유지, 빈 변경)
+{
+  const metaBefore = (await query('admin', 'select state, revision::int as revision from public.ai_wiki_user_meta where user_id=$1', [A]))[0];
+  const r1 = (await query(A, "select public.ai_wiki_save_changes($1, 'null'::jsonb, 'null'::jsonb, null) as r", [metaBefore.revision]))[0].r;
+  const r2 = (await query(A, "select public.ai_wiki_save_changes($1, null, null, '{}') as r", [r1.revision]))[0].r;
+  assert.equal(r2.revision, metaBefore.revision + 2);
+  const metaAfter = (await query('admin', 'select state from public.ai_wiki_user_meta where user_id=$1', [A]))[0];
+  assert.deepEqual(metaAfter.state, metaBefore.state);
+  await as(A);
+  await assert.rejects(db.query("select public.ai_wiki_save_changes($1, '[]'::jsonb, null, null)", [r2.revision]), (e) => e.code === '22023');
+}
+console.log('PASS: save function treats SQL NULL and JSON null alike and keeps the stored meta');
+
 // ── 10. 되돌리기: keep_changes는 새 구조의 내용으로, discard는 전환 전 원본으로
 const current = await engine(A).load();
 const splitRows = (await query('admin', 'select count(*)::int as n from public.ai_wiki_materials where user_id=$1', [A]))[0].n;
@@ -262,4 +275,67 @@ await admin('manual/split-rollback-user.sql', A);
 assert.deepEqual(await legacyRow(A), legacyBefore);
 assert.equal((await engine(A).load()).materials.length, legacyBefore.state.materials.length);
 console.log('PASS: rollback (discard) returns to the untouched pre-migration row');
+
+// ── 11. 서버 백업: 비공개 스키마, 앱 역할 접근 불가, 원본과 일치, 덮어쓰기 불가
+{
+  await db.exec('reset role');
+  // Supabase처럼 새 테이블에 앱 역할 권한이 자동으로 붙는 상태를 흉내 낸다.
+  await db.exec('alter default privileges grant all on tables to anon, authenticated');
+  await db.exec(await sql('manual/backup-user-state.sql'));
+  await db.exec('alter default privileges revoke all on tables from anon, authenticated');
+  const total = (await query('admin', 'select count(*)::int as n from public.ai_wiki_user_state'))[0].n;
+  assert.equal((await query('admin', 'select count(*)::int as n from ai_wiki_backup.user_state_20261108'))[0].n, total);
+  for (const who of [null, A]) {
+    await as(who);
+    await assert.rejects(db.query('select * from ai_wiki_backup.user_state_20261108'));
+  }
+  await db.exec('reset role');
+  await assert.rejects(db.exec(await sql('manual/backup-user-state.sql')), /already exists/);
+  await db.exec('rollback');
+  assert.equal((await query('admin', 'select count(*)::int as n from ai_wiki_backup.user_state_20261108'))[0].n, total);
+}
+console.log('PASS: backup lives in a private schema, matches the source, is unreadable by anon/authenticated and is never overwritten');
+
+// ── 12. 테스트 계정 가상 자료: 실제 자료가 있는 계정은 거부, 약 14MB 생성, 전환·묶음 저장까지 동작
+{
+  const D = '44444444-4444-4444-8444-444444444444';
+  email[D] = 'test@example.com';
+  await query('admin', 'insert into auth.users values ($1, $2)', [D, email[D]]);
+  const seedSql = async (mail, confirm = mail) => {
+    await db.exec('reset role');
+    const text = (await sql('manual/test-seed-virtual-data.sql'))
+      .replace("v_email text := 'REPLACE_WITH_TEST_EMAIL'", `v_email text := '${mail}'`)
+      .replace("v_confirm text := 'REPLACE_WITH_TEST_EMAIL'", `v_confirm text := '${confirm}'`);
+    return db.exec(text);
+  };
+  await assert.rejects(seedSql(email[D]), /저장 행이 없습니다/);
+  const fresh = engine(D);
+  assert.equal(await fresh.load(), null);
+  const empty = fixture(0, 'd');
+  await fresh.save(empty);
+  await assert.rejects(seedSql(email[D], 'other@example.com'), /같게 입력/);
+  const bBefore = await legacyRow(B);
+  await assert.rejects(seedSql(email[B]), /가상 자료가 아닌/);
+  assert.deepEqual(await legacyRow(B), bBefore);
+  await seedSql(email[D]);
+  await seedSql(email[D]);
+  const seeded = await legacyRow(D);
+  const bytes = Buffer.byteLength(JSON.stringify(seeded.state));
+  assert.ok(bytes > 13_000_000 && bytes < 15_500_000, `about 14MB (${bytes})`);
+  const loadedD = await engine(D).load();
+  assert.equal(loadedD.materials.length, 202);
+  assert.deepEqual(loadedD.projects, empty.projects);
+  assert.ok(loadedD.materials.every((m) => m.id.startsWith('virtual-') && m.projectId === empty.projects[0].id));
+  await admin('manual/split-migrate-user.sql', D);
+  const big = engine(D);
+  const s = await big.load();
+  assert.equal(big.mode, 'split');
+  calls = 0;
+  const bulk = { ...s, materials: s.materials.map((m) => ({ ...m, relevance: 5 })) };
+  await big.save(bulk);
+  assert.ok(calls >= 10, `14MB bulk change sent in ${calls} chunks of about 1MB`);
+  assert.deepEqual((await engine(D).load()).materials, bulk.materials);
+  assert.deepEqual(await legacyRow(B), bBefore);
+}
+console.log('PASS: virtual 14MB seed only for an exact test account with no real materials; migrates and saves in ~1MB chunks');
 await db.close();
