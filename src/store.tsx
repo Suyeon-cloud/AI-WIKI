@@ -289,7 +289,7 @@ function CloudStore({ children, engine, boot }: { children: ReactNode; engine: C
         <br />변경 내용은 이 브라우저의 복구 사본에 남아 있으며 자동으로 지우지 않습니다. 새로고침하거나 창을 닫기 전에 "현재 내용 백업"을 받아 두세요.
         <br /><button className="btn btn-sm" onClick={backup}>현재 내용 백업</button> <button className="btn btn-sm" onClick={resumeSave}>저장 다시 시도</button>
       </> : pendingSave ? <><b>저장 중…</b> 완료 표시 전에 새로고침하거나 창을 닫으면 이번 변경은 서버에 저장되지 않습니다.</>
-        : <><b>저장 완료</b> 내 계정의 Supabase에 저장됨{savedAt && ` · ${savedAt}`}</>}
+        : <><b>저장 완료</b> 내 계정의 Supabase에 저장됨{engine.mode === 'split' && ' (변경분 저장)'}{savedAt && ` · ${savedAt}`}</>}
     </div>
     {children}
   </StoreContext.Provider>;

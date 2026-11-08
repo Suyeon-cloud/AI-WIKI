@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "thesis:hwpx": "esbuild scripts/thesis-hwpx.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/ai-wiki-verify/thesis-hwpx.cjs --log-level=warning && node node_modules/.cache/ai-wiki-verify/thesis-hwpx.cjs",
     "verify": "esbuild tests/verify.ts --bundle --platform=node --format=cjs --loader:.md=text --outfile=node_modules/.cache/ai-wiki-verify/verify.cjs --log-level=warning && node node_modules/.cache/ai-wiki-verify/verify.cjs",
-    "verify:cloud": "esbuild src/lib/cloud-state.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/ai-wiki-verify/cloud-state.mjs --log-level=warning && node tests/cloud.mjs",
+    "verify:cloud": "esbuild src/lib/cloud-state.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/ai-wiki-verify/cloud-state.mjs --log-level=warning && esbuild src/lib/data.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/ai-wiki-verify/data.mjs --log-level=warning && node tests/cloud.mjs && node tests/cloud-split.mjs",
     "verify:server": "esbuild src/lib/session-key.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/ai-wiki-verify/session-key.mjs --log-level=warning && node tests/server.mjs"
   },
   "dependencies": {
