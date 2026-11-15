@@ -785,3 +785,5 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 .clip-row-head .ok-tag, .clip-row-head .warn-tag { flex: none; }
 .clip-reasons { margin: 4px 0 0 22px; color: #a35a00; overflow-wrap: anywhere; }
 .clip-summary { margin: 8px 0; max-width: 320px; }
+.yt-unmatched { margin: 8px 0; }
+.yt-unmatched ul { margin: 4px 0 0; padding-left: 18px; max-height: 140px; overflow: auto; overflow-wrap: anywhere; }

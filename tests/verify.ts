@@ -9,7 +9,7 @@
  * 서식 예시 중 한글 저자 자료는 검증용 가상 자료다.
  */
 import { buildBackup, normBib, normalizeMaterial, parseFullState, planImport, resolveImport } from '../src/lib/data';
-import { parseImportFile, readClipNote } from '../src/lib/importers';
+import { parseImportFile, readClipNote, readTranscriptNote } from '../src/lib/importers';
 import { materialToMarkdown, markdownToHtml } from '../src/lib/utils';
 import { checkBib, formatCitation, sameAuthorYear, segsToHtml, segsToText, sortForStyle, type CitationStyle } from '../src/lib/citation';
 import { CORRUPT_PREFIX, LEGACY_KEY_V1, STORAGE_KEY, loadState, saveState, type StorageLike } from '../src/lib/persist';
@@ -23,6 +23,8 @@ import { analyzeTemplate, TEMPLATE_LIMITS, TemplateError, toHwpxTemplate } from 
 import { checkFootnotes, segmentLine, splitNotes } from '../src/lib/footnotes';
 import { clipAbstract, clipYear, defaultEnrichFields, enrichPatch, planEnrichment, reviewReasons, summarizeSelection, type ClipFile, type EnrichField } from '../src/lib/clip-enrich';
 import { matchBibQuery, matchRefType } from '../src/lib/bib-search';
+import { TranscriptError, buildTranscriptNote, dedupeCues, formatTime, groupSegments, parseVtt, pickTrack, ytdlpError, type YtInfo } from '../src/lib/yt-transcript';
+import { planTranscriptEnrich, summarizeTranscript, transcriptPatch, type YtField } from '../src/lib/yt-enrich';
 import { buildThesisHwpx, thesisXml, zipStore, type ThesisDoc } from '../src/lib/hwpx';
 import sampleThesis from '../.claude/skills/hufs-thesis-writing/examples/sample-thesis.json';
 import type { AppState, Bib, Material } from '../src/types';
@@ -1066,6 +1068,105 @@ function bibSearchTests() {
   eq([thesis.sourceType, thesis.bib?.type], ['Markdown', 'thesis'], '검색·필터는 자료를 바꾸지 않음 (원본 형식·서지 유형 그대로)');
 }
 
+/* ───────── 16. YouTube 자막 → Markdown · 기존 자료 보완 (가상 영상) ───────── */
+
+const VID = 'AbCdEfGhIj1';
+const MANUAL_VTT = 'WEBVTT\nKind: captions\nLanguage: ko\n\nNOTE 가상 자막\n\n1\n00:00:01.000 --> 00:00:03.500\n안녕하세요 &amp; 반갑습니다\n\n00:00:04.000 --> 00:00:06.000\n<i>오늘은</i> 가상 강의입니다\n\n00:00:35.000 --> 00:00:37.000\n두 번째 문단입니다\n\n01:02:03.000 --> 01:02:05.000\n한 시간 뒤 문장\n';
+const AUTO_VTT =
+  'WEBVTT\nKind: captions\nLanguage: ko\n\n' +
+  '00:00:00.000 --> 00:00:02.000 align:start position:0%\n첫<00:00:00.500><c> 문장</c>\n\n' +
+  '00:00:02.000 --> 00:00:02.010 align:start position:0%\n첫 문장\n \n\n' +
+  '00:00:02.010 --> 00:00:04.000 align:start position:0%\n첫 문장\n둘째<00:00:02.500><c> 문장</c>\n\n' +
+  '00:00:04.000 --> 00:00:04.010 align:start position:0%\n둘째 문장\n \n\n' +
+  '00:00:04.010 --> 00:00:06.000 align:start position:0%\n둘째 문장\n셋째 문장\n';
+const ytInfo = (over: Partial<YtInfo> = {}): YtInfo => ({
+  id: VID, title: '가상 강의: 생성형 AI', channel: '가상 채널', upload_date: '20240315', language: 'ko',
+  subtitles: { ko: [{ ext: 'vtt' }], en: [{ ext: 'vtt' }], live_chat: [{ ext: 'json' }] },
+  automatic_captions: { 'ko-orig': [{ ext: 'vtt' }], ko: [{ ext: 'vtt' }], en: [{ ext: 'vtt' }], ja: [{ ext: 'vtt' }] },
+  ...over,
+});
+
+async function youtubeTests() {
+  section('16. YouTube 자막 → 타임스탬프 Markdown (가상 영상)');
+  eq(pickTrack(ytInfo(), ['ko', 'en']), { lang: 'ko', kind: 'manual', translated: false }, '수동 자막 우선 (요청 언어 순)');
+  eq(pickTrack(ytInfo({ subtitles: { en: [{ ext: 'vtt' }] } }), ['ko', 'en']), { lang: 'en', kind: 'manual', translated: false }, '수동 자막이 있으면 다른 요청 언어라도 자동 자막보다 우선');
+  eq(pickTrack(ytInfo({ subtitles: { 'ko-KR': [{ ext: 'vtt' }] } }), ['ko']), { lang: 'ko-KR', kind: 'manual', translated: false }, '지역 코드가 붙은 수동 자막(ko-KR)');
+  eq(pickTrack(ytInfo({ subtitles: {} }), ['ko']), { lang: 'ko-orig', kind: 'auto', translated: false }, '수동 자막 없음 → 원어 자동 자막(-orig)');
+  eq(pickTrack(ytInfo({ subtitles: {}, language: 'en', automatic_captions: { 'en-orig': [{}], ko: [{}] } }), ['ko']), { lang: 'ko', kind: 'auto', translated: true }, '원어가 다르면 자동 번역 자막으로 표시');
+  eq(pickTrack(ytInfo({ subtitles: { live_chat: [{}] }, automatic_captions: {} }), ['ko', 'en']), undefined, '자막 없음(라이브 채팅만) → 없음');
+  eq(pickTrack(ytInfo({ subtitles: { ko: [] }, automatic_captions: {} }), ['ko']), undefined, '목록만 있고 파일 없는 자막은 제외');
+
+  const manual = dedupeCues(parseVtt(MANUAL_VTT));
+  eq(manual.map((s) => s.text), ['안녕하세요 & 반갑습니다', '오늘은 가상 강의입니다', '두 번째 문단입니다', '한 시간 뒤 문장'], 'VTT: 머리말·NOTE·번호 제외, 태그·엔티티 정리');
+  eq(groupSegments(manual), ['[00:01] 안녕하세요 & 반갑습니다 오늘은 가상 강의입니다', '[00:35] 두 번째 문단입니다', '[1:02:03] 한 시간 뒤 문장'], '30초 단위 문단 + 타임스탬프 (1시간 이상은 h:mm:ss)');
+  const auto = dedupeCues(parseVtt(AUTO_VTT.replace(/\n/g, '\r\n')));
+  eq(auto.map((s) => [formatTime(s.start), s.text]), [['00:00', '첫 문장'], ['00:02', '둘째 문장'], ['00:04', '셋째 문장']], '자동 자막: 굴러가는 중복 줄·전환 큐·글자별 시간 태그 제거 (CRLF도 처리)');
+
+  const note = buildTranscriptNote(ytInfo(), { lang: 'ko', kind: 'manual', translated: false }, groupSegments(manual), new Date('2026-11-15T03:00:00Z'));
+  eq(note.fileName, `가상 강의_ 생성형 AI [${VID}].md`, '파일명: 제목(금지 문자 치환) + [영상 ID]');
+  for (const k of ['source_type: YouTube', `url: https://www.youtube.com/watch?v=${VID}`, `youtube_id: ${VID}`, 'ref_type: video', 'author: "가상 채널"', 'published: 2024-03-15', 'accessed: 2026-11-15', 'transcript_kind: manual', 'transcript_lang: ko', 'transcript_source: yt-dlp'])
+    ok(note.text.includes(`\n${k}\n`), `노트 frontmatter: ${k}`);
+  ok(note.text.includes('## 자막\n\n[00:01] 안녕하세요') && note.text.includes('- 자막: 수동 자막 · ko · yt-dlp로 2026-11-15 추출'), '본문: 자막 종류·언어·추출일 + 타임스탬프 자막');
+  const autoNote = buildTranscriptNote(ytInfo({ channel: undefined, uploader: '업로더', upload_date: undefined }), { lang: 'ko', kind: 'auto', translated: true }, ['[00:00] 가'], new Date('2026-11-15T03:00:00Z'));
+  ok(autoNote.text.includes('transcript_kind: auto') && autoNote.text.includes('transcript_translated: true') && autoNote.text.includes('author: "업로더"') && !autoNote.text.includes('published:'), '자동·번역 자막 표시, 채널 없으면 업로더, 날짜 없으면 생략');
+  let err: unknown;
+  try { buildTranscriptNote(ytInfo(), { lang: 'ko', kind: 'manual', translated: false }, [], new Date()); } catch (e) { err = e; }
+  eq(err instanceof TranscriptError && err.code, 'empty', '자막 글자가 없으면 오류(empty)');
+  eq(
+    ['ERROR: [youtube] x: Private video. Sign in if you have access', 'ERROR: [youtube] x: Sign in to confirm you’re not a bot', 'ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests', 'ERROR: Unsupported URL: https://example.com', 'ERROR: [youtube] x: Video unavailable', 'ERROR: something odd'].map((s) => ytdlpError(s).code),
+    ['unavailable', 'blocked', 'rate-limited', 'bad-url', 'unavailable', 'failed'],
+    'yt-dlp 오류 → 볼 수 없음·로그인 차단·요청 한도·URL 오류·그 밖의 오류 구분',
+  );
+  ok(/--cookies-from-browser/.test(ytdlpError('Sign in to confirm').message), '로그인 차단 안내에 쿠키 옵션 포함');
+
+  // 기존 Markdown 가져오기와 호환
+  const [imp] = await materialsOf(note.fileName, note.text);
+  const p = imp.partial;
+  eq([p.title, p.sourceType, p.youtubeId, p.url, p.bib?.type, p.bib?.year, p.bib?.authors, p.bib?.container, p.bib?.accessed], ['가상 강의: 생성형 AI', 'YouTube', VID, `https://www.youtube.com/watch?v=${VID}`, 'video', '2024', ['가상 채널'], 'YouTube', '2026-11-15'], '생성 노트를 Markdown 가져오기 → YouTube 자료·영상 서지');
+  ok((p.content ?? '').includes('[00:35] 두 번째 문단입니다'), '가져온 자료 본문(content)에 타임스탬프 자막');
+
+  section('16-1. YouTube 자막 보완 — youtube_id 1:1 매칭 · 빈 필드만');
+  const tn = readTranscriptNote(note.text)!;
+  eq([tn.youtubeId, tn.kind, tn.lang, tn.year, tn.url, tn.content === p.content], [VID, 'manual', 'ko', '2024', `https://www.youtube.com/watch?v=${VID}`, true], '자막 노트 읽기 (본문은 가져오기와 동일)');
+  eq(readTranscriptNote('---\ntitle: x\nyoutube_id: AbCdEfGhIj1\n---\n본문만'), undefined, "'## 자막' 구간 없는 노트는 대상 아님");
+  eq(readTranscriptNote('---\ntitle: x\nyoutube_id: bad\n---\n## 자막\n\n[00:00] 가'), undefined, '영상 ID 형식이 틀리면 대상 아님');
+  const other = (id: string) => buildTranscriptNote(ytInfo({ id }), { lang: 'ko', kind: 'auto', translated: false }, ['[00:00] 가상'], new Date('2026-11-15T03:00:00Z')).text;
+  const yt = (over: Partial<Material>) => mat(undefined, { sourceType: 'YouTube', researchMemo: '연구 메모', myView: '내 관점', researchLink: '연결', analysis: { summary: 'S', topic: '', keywords: [], relevance: 4, rationale: '', connection: '', insights: ['i'], citationCandidate: '' }, ...over });
+  const mEmpty = yt({ id: 'y1', title: '빈 영상 자료', youtubeId: VID });
+  const mHasBody = yt({ id: 'y2', title: '본문 있는 자료', youtubeId: 'Zz1234567_-', content: '직접 쓴 정리', url: 'https://youtu.be/Zz1234567_-', bib: { author: '', year: '2023', publisher: '', type: 'video' } });
+  const mDupA = yt({ id: 'y3', title: '중복 A', youtubeId: 'Dup0000000A' });
+  const mDupB = yt({ id: 'y4', title: '중복 B', youtubeId: 'Dup0000000A' });
+  const mFull = yt({ id: 'y5', title: '모두 채운 자료', youtubeId: 'Full000000A', content: '[00:00] 가상', url: 'https://www.youtube.com/watch?v=Full000000A', bib: { author: '', year: '2024', publisher: '' } });
+  const files = [
+    { name: 'a.md', text: note.text },
+    { name: 'b.md', text: other('Zz1234567_-') },
+    { name: 'c.md', text: other('Dup0000000A') },
+    { name: 'd.md', text: other('NoMatch0001') },
+    { name: 'e1.md', text: other('Twice00000A') },
+    { name: 'e2.md', text: other('Twice00000A') },
+    { name: 'f.md', text: other('Full000000A') },
+    { name: 'g.md', text: '---\ntitle: 일반 노트\n---\n본문' },
+  ];
+  const plan = planTranscriptEnrich([mEmpty, mHasBody, mDupA, mDupB, mFull], files, readTranscriptNote);
+  eq(plan.rows.map((r) => [r.file.name, r.material.id, r.changes.map((c) => c.field)]), [['a.md', 'y1', ['content', 'url', 'year']]], '빈 자료만 보완 대상: 본문·URL·연도 모두 후보');
+  eq(plan.skipped.map((s) => [s.name, s.reason]), [['b.md', 'nothing'], ['c.md', 'dup-material'], ['d.md', 'unmatched'], ['e1.md', 'dup-note'], ['e2.md', 'dup-note'], ['f.md', 'nothing'], ['g.md', 'not-transcript']], '본문·연도 있는 자료·중복 자료·미매칭·중복 노트·일반 노트는 제외 (사유별)');
+  const rowB = planTranscriptEnrich([mHasBody], [{ name: 'b.md', text: other('Zz1234567_-').replace('published: 2024-03-15', 'published: 2023-01-01') }], readTranscriptNote);
+  eq([rowB.rows.length, rowB.skipped[0]?.reason], [0, 'nothing'], '기존 본문·URL·연도가 있으면 바꾸지 않음');
+  const r0 = plan.rows[0];
+  eq(r0.kept, [], '빈 자료는 유지 표시 없음');
+  const kept = planTranscriptEnrich([yt({ id: 'y6', youtubeId: VID, content: '직접 쓴 정리' })], [{ name: 'a.md', text: note.text }], readTranscriptNote).rows[0];
+  eq([kept.changes.map((c) => c.field), kept.kept.map((c) => c.field)], [['url', 'year'], ['content']], '본문이 있으면 본문은 유지, 빈 URL·연도만');
+  const patch = transcriptPatch(mEmpty, r0.changes);
+  const after = { ...mEmpty, ...patch };
+  eq(Object.keys(patch).sort(), ['bib', 'content', 'url'], 'patch는 content·url·bib(연도)만');
+  eq([after.researchMemo, after.myView, after.researchLink, after.analysis?.summary, after.title, after.youtubeId], ['연구 메모', '내 관점', '연결', 'S', '빈 영상 자료', VID], '메모·내 관점·연결·AI 분석·제목·영상 ID 보존');
+  eq(transcriptPatch({ ...mEmpty, content: '그사이 작성' }, r0.changes).content, undefined, '반영 직전에 채워진 본문은 덮어쓰지 않음');
+  eq(transcriptPatch(mEmpty, r0.changes.filter((c) => c.field === 'year')), { bib: { author: '', year: '2024', publisher: '' } }, '승인한 필드만 반영');
+  eq(planTranscriptEnrich([after], [{ name: 'a.md', text: note.text }], readTranscriptNote).skipped.map((s) => s.reason), ['nothing'], '보완 후 다시 실행해도 변경 없음');
+  eq(summarizeTranscript(plan.rows, new Set(['y1']), { y1: new Set<YtField>(['content', 'year']) }), { count: 1, byField: { content: 1, url: 0, year: 1 } }, '저장 전 요약: 건수·필드별 변경 수');
+  eq(summarizeTranscript(plan.rows, new Set(), {}).count, 0, '선택 없으면 0건');
+}
+
 (async () => {
   await storageTests();
   await backupTests();
@@ -1082,6 +1183,7 @@ function bibSearchTests() {
   await coverFitTests();
   await clipTests();
   bibSearchTests();
+  await youtubeTests();
   console.log(`\n${failed ? '실패' : '모두 통과'}: ${passed}건 통과, ${failed}건 실패`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => {

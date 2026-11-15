@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --noEmit",
     "preview": "vite preview",
+    "yt:transcript": "esbuild scripts/yt-transcript.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/ai-wiki-verify/yt-transcript.cjs --log-level=warning && node node_modules/.cache/ai-wiki-verify/yt-transcript.cjs",
     "thesis:hwpx": "esbuild scripts/thesis-hwpx.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/ai-wiki-verify/thesis-hwpx.cjs --log-level=warning && node node_modules/.cache/ai-wiki-verify/thesis-hwpx.cjs",
     "verify": "esbuild tests/verify.ts --bundle --platform=node --format=cjs --loader:.md=text --outfile=node_modules/.cache/ai-wiki-verify/verify.cjs --log-level=warning && node node_modules/.cache/ai-wiki-verify/verify.cjs",
     "verify:cloud": "esbuild src/lib/cloud-state.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/ai-wiki-verify/cloud-state.mjs --log-level=warning && esbuild src/lib/data.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/ai-wiki-verify/data.mjs --log-level=warning && node tests/cloud.mjs && node tests/cloud-split.mjs",

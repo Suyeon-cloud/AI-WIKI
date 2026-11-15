@@ -9,6 +9,8 @@ import { clampRel, isFullBackup, normBib, normalizeMaterial, parseFullState, pic
 import { MD_BIB_KEYS, MD_HEADINGS, PARAS, SOURCE_TYPES, isValidUrl } from './utils';
 import { parseYaml, type YamlValue } from './yaml';
 import { clipYear, readClip, type ClipInfo } from './clip-enrich';
+import { TRANSCRIPT_HEADING, isYoutubeId, youtubeWatchUrl } from './yt-transcript';
+import type { TranscriptNote } from './yt-enrich';
 
 export interface ParsedCandidate {
   partial: Partial<Material>;
@@ -75,6 +77,31 @@ export function readClipNote(text: string): ClipInfo | undefined {
   const { meta, body, hasFm } = splitFrontmatter(text);
   if (!hasFm || asStr(meta.exported_from) === 'AI WIKI' || meta.ai_wiki_id != null) return undefined;
   return readClip(asStr(meta.source), asStr(meta.published), body);
+}
+
+/**
+ * YouTube 자막 노트(scripts/yt-transcript로 만든 .md)를 읽는다. youtube_id와 '## 자막' 구간이 있어야 한다.
+ * content는 Markdown 가져오기로 새 자료를 만들 때와 같은 노트 본문이다.
+ */
+export function readTranscriptNote(text: string): TranscriptNote | undefined {
+  const { meta, body, hasFm } = splitFrontmatter(text);
+  const id = asStr(meta.youtube_id);
+  if (!hasFm || !isYoutubeId(id) || meta.ai_wiki_id != null) return undefined;
+  const lines = body.split(/\r?\n/);
+  const hi = lines.findIndex((l) => l.trim() === TRANSCRIPT_HEADING);
+  if (hi < 0 || !lines.slice(hi + 1).some((l) => l.trim())) return undefined;
+  const kind = asStr(meta.transcript_kind);
+  const url = asStr(meta.url);
+  return {
+    youtubeId: id,
+    title: asStr(meta.title),
+    url: url && isValidUrl(url) ? url : youtubeWatchUrl(id),
+    year: clipYear(asStr(meta.published)),
+    kind: kind === 'manual' || kind === 'auto' ? kind : undefined,
+    lang: asStr(meta.transcript_lang),
+    translated: meta.transcript_translated === true,
+    content: body.trim(),
+  };
 }
 
 const asList = (v: YamlValue | undefined): string[] =>
