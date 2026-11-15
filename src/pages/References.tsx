@@ -20,7 +20,8 @@ import {
   type CitationStyle,
   type Seg,
 } from '../lib/citation';
-import { Card, Empty, NeedProject, PageHeader, Relevance, SourceTag, StatusBadge } from '../components/ui';
+import { Card, Empty, MaterialType, NeedProject, PageHeader, Relevance, StatusBadge } from '../components/ui';
+import { matchBibQuery, matchRefType, type RefTypeFilter } from '../lib/bib-search';
 import { useProject } from '../store';
 import { useNav } from '../components/ProjectDialog';
 
@@ -183,6 +184,8 @@ export function References() {
   const [bibFilter, setBibFilter] = useState('전체');
   const [style, setStyle] = useState<CitationStyle>(CITATION_STYLES[0]);
   const [editId, setEditId] = useState<string | null>(null);
+  const [q, setQ] = useState('');
+  const [refType, setRefType] = useState<RefTypeFilter>('전체');
   const state = { materials: projectMaterials }; // 현재 프로젝트(폴더)의 자료만
   const nav = useNav();
 
@@ -193,11 +196,20 @@ export function References() {
           (m) =>
             m.relevance >= Number(rel) &&
             (src === '전체' || m.sourceType === src) &&
-            (bibFilter === '전체' || m.bibStatus === bibFilter),
+            (bibFilter === '전체' || m.bibStatus === bibFilter) &&
+            matchRefType(m, refType) &&
+            matchBibQuery(m, q),
         )
         .sort((a, b) => b.relevance - a.relevance),
-    [projectMaterials, rel, src, bibFilter],
+    [projectMaterials, rel, src, bibFilter, refType, q],
   );
+  const resetFilters = () => {
+    setRel('1');
+    setSrc('전체');
+    setBibFilter('전체');
+    setRefType('전체');
+    setQ('');
+  };
   const chosen = state.materials.filter((m) => m.citationIncluded);
   const ready = sortForStyle(chosen.filter((m) => checkBib(m).complete), style);
   const pending = chosen.filter((m) => !checkBib(m).complete);
@@ -239,6 +251,15 @@ export function References() {
       </div>
 
       <div className="filters">
+        <input className="search" type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="제목·저자·연도 검색" aria-label="참고문헌 후보 검색 (제목·저자·연도)" />
+        <label>
+          서지 유형
+          <select value={refType} onChange={(e) => setRefType(e.target.value as RefTypeFilter)}>
+            <option value="전체">전체</option>
+            {REF_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+            <option value="미지정">유형 미지정</option>
+          </select>
+        </label>
         <label>
           관련도
           <select value={rel} onChange={(e) => setRel(e.target.value)}>
@@ -271,7 +292,10 @@ export function References() {
 
       <Card title="참고문헌 후보">
         {list.length === 0 ? (
-          <Empty>조건에 맞는 후보가 없습니다.</Empty>
+          <Empty>
+            조건에 맞는 후보가 없습니다.{' '}
+            {(q || refType !== '전체' || rel !== '1' || src !== '전체' || bibFilter !== '전체') && <button className="link" onClick={resetFilters}>검색·필터 초기화</button>}
+          </Empty>
         ) : (
           <table className="table ref-candidates">
             <thead>
@@ -301,7 +325,7 @@ export function References() {
                       </label>
                     </td>
                     <td className="cell-title">{m.title}</td>
-                    <td><SourceTag type={m.sourceType} /></td>
+                    <td><MaterialType m={m} /></td>
                     <td><Relevance value={m.relevance} /></td>
                     <td>
                       {check.complete ? (
@@ -366,7 +390,7 @@ export function References() {
                     <li key={m.id}>
                       <span className="warn-tag">확인 필요</span> {m.title}
                       <span className="muted small"> — {checkBib(m).missing.join(', ')}</span>{' '}
-                      <button className="link small" onClick={() => { setRel('1'); setSrc('전체'); setBibFilter('전체'); setEditId(m.id); }}>입력</button>
+                      <button className="link small" onClick={() => { resetFilters(); setEditId(m.id); }}>입력</button>
                     </li>
                   ))}
                 </ul>

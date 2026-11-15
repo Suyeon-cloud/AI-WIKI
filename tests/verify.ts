@@ -22,6 +22,7 @@ import { SaveLoop } from '../src/lib/save-loop';
 import { analyzeTemplate, TEMPLATE_LIMITS, TemplateError, toHwpxTemplate } from '../src/lib/hwpx-template';
 import { checkFootnotes, segmentLine, splitNotes } from '../src/lib/footnotes';
 import { clipAbstract, clipYear, planEnrichment, enrichPatch, type ClipFile } from '../src/lib/clip-enrich';
+import { matchBibQuery, matchRefType } from '../src/lib/bib-search';
 import { buildThesisHwpx, thesisXml, zipStore, type ThesisDoc } from '../src/lib/hwpx';
 import sampleThesis from '../.claude/skills/hufs-thesis-writing/examples/sample-thesis.json';
 import type { AppState, Bib, Material } from '../src/types';
@@ -1013,6 +1014,31 @@ async function clipTests() {
   eq(readClipNote(exported), undefined, 'AI WIKI가 내보낸 노트는 웹 클리퍼 매핑 대상 아님');
 }
 
+/* ───────── 15. 참고문헌 후보 검색·서지 유형 필터 ───────── */
+
+function bibSearchTests() {
+  section('15. 참고문헌 후보 검색 (제목·저자·연도) · 서지 유형 필터');
+  const thesis = mat({ author: '가상저자', authors: ['홍길동', 'Kim, Minsu'], year: '2024', publisher: '가상대학교', type: 'thesis', title: '생성형 AI 교육 프로그램 연구' }, { id: 't1', title: '자료 제목 A', sourceType: 'Markdown' });
+  const journal = mat({ author: '이몽룡', year: '2021', publisher: '', type: 'journal' }, { id: 'j1', title: 'Motion Graphics in Class', sourceType: 'PDF' });
+  const untyped = mat(undefined, { id: 'u1', title: '유형 없는 자료', sourceType: 'Web' });
+  const all = [thesis, journal, untyped];
+  const ids = (f: (m: Material) => boolean) => all.filter(f).map((m) => m.id);
+  eq(ids((m) => matchBibQuery(m, '')), ['t1', 'j1', 'u1'], '빈 검색어 → 전체');
+  eq(ids((m) => matchBibQuery(m, '자료 제목')), ['t1'], '자료 제목 (낱말 모두 포함)');
+  eq(ids((m) => matchBibQuery(m, '교육 프로그램')), ['t1'], '서지 제목도 검색');
+  eq(ids((m) => matchBibQuery(m, '홍길동')), ['t1'], '저자 목록 검색');
+  eq(ids((m) => matchBibQuery(m, 'kim')), ['t1'], '영문 저자 대소문자 무시');
+  eq(ids((m) => matchBibQuery(m, '이몽룡 2021')), ['j1'], '저자 + 연도 함께');
+  eq(ids((m) => matchBibQuery(m, '2024')), ['t1'], '연도 검색');
+  eq(ids((m) => matchBibQuery(m, '이몽룡 2024')), [], '낱말 하나라도 없으면 제외');
+  eq(ids((m) => matchBibQuery(m, '가상대학교')), [], '발행처 등 다른 항목은 검색 대상 아님');
+  eq(ids((m) => matchRefType(m, '전체')), ['t1', 'j1', 'u1'], "서지 유형 '전체'");
+  eq(ids((m) => matchRefType(m, 'thesis')), ['t1'], '서지 유형 학위논문');
+  eq(ids((m) => matchRefType(m, 'journal')), ['j1'], '서지 유형 학술지 논문');
+  eq(ids((m) => matchRefType(m, '미지정')), ['u1'], "서지 유형 '미지정' = bib.type 없음");
+  eq([thesis.sourceType, thesis.bib?.type], ['Markdown', 'thesis'], '검색·필터는 자료를 바꾸지 않음 (원본 형식·서지 유형 그대로)');
+}
+
 (async () => {
   await storageTests();
   await backupTests();
@@ -1028,6 +1054,7 @@ async function clipTests() {
   await templateOutputTests();
   await coverFitTests();
   await clipTests();
+  bibSearchTests();
   console.log(`\n${failed ? '실패' : '모두 통과'}: ${passed}건 통과, ${failed}건 실패`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => {

@@ -5,7 +5,7 @@ import { PARAS, SOURCE_TYPES, formatDate, formatSize, ytThumb } from '../lib/uti
 import { formatCitation, segsToText } from '../lib/citation';
 import { DriveError } from '../lib/drive';
 import { sendToDrive, sendToObsidian } from '../lib/sync';
-import { Card, Empty, Modal, PageHeader, Relevance, SourceTag, StatusBadge } from '../components/ui';
+import { Card, Empty, MaterialType, Modal, PageHeader, Relevance, StatusBadge } from '../components/ui';
 import { ImportExport } from '../components/ImportExport';
 import { useNav } from '../components/ProjectDialog';
 import { useConnections } from '../components/Sidebar';
@@ -82,7 +82,7 @@ function Detail({ m }: { m: Material }) {
         </dd>
         <dt>유형 · 출처</dt>
         <dd>
-          <SourceTag type={m.sourceType} /> {m.importedFrom && <span className="chip chip-muted">{m.importedFrom === 'KCI PDF' ? 'PDF' : m.importedFrom}</span>}
+          <MaterialType m={m} /> {m.importedFrom && <span className="chip chip-muted">{m.importedFrom === 'KCI PDF' ? 'PDF' : m.importedFrom}</span>}
         </dd>
         <dt>핵심 키워드</dt>
         <dd className="chips">{m.keywords.length ? m.keywords.map((k) => <span key={k} className="chip">{k}</span>) : <span className="muted">없음</span>}</dd>
@@ -477,7 +477,7 @@ export function Library() {
                           {m.title}
                           <div className="muted small">{m.bib?.container ?? m.topic}{folder.kind === 'all' && ` · ${state.projects.find((p) => p.id === m.projectId)?.name ?? '미분류'}`}</div>
                         </td>
-                        <td><SourceTag type={m.sourceType} /></td>
+                        <td><MaterialType m={m} /></td>
                         <td className="small">{[m.bib?.authors?.slice(0, 2).join(', '), m.bib?.year].filter(Boolean).join(' · ') || <span className="muted">-</span>}</td>
                         <td><Relevance value={m.relevance} /></td>
                         <td>{m.bibStatus === '서지정보 입력됨' ? <span className="ok-tag">완성</span> : <span className="warn-tag">확인</span>}</td>

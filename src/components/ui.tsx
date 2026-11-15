@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from 'react';
-import type { SourceType } from '../types';
+import type { Material, SourceType } from '../types';
 import { useStore } from '../store';
+import { REF_TYPE_LABEL } from '../lib/citation';
 
 export type Status = 'real' | 'demo' | 'planned' | 'local' | 'ai';
 const STATUS_TEXT: Record<Status, string> = {
@@ -26,8 +27,20 @@ export function StatusBadge({ s, children }: { s: Status; children?: ReactNode }
   );
 }
 
-export function SourceTag({ type }: { type: SourceType }) {
-  return <span className={`src src-${type.toLowerCase()}`}>{type}</span>;
+export function SourceTag({ type, sub = false }: { type: SourceType; sub?: boolean }) {
+  return <span className={`src src-${type.toLowerCase()}${sub ? ' src-sub' : ''}`} title={sub ? `원본 형식: ${type}` : undefined}>{type}</span>;
+}
+
+/** 자료 유형 표시: 서지 유형(학위논문·학술지 논문 등)이 있으면 그것을 먼저, 원본 형식(Markdown·PDF 등)은 작게 덧붙인다 */
+export function MaterialType({ m }: { m: Pick<Material, 'sourceType' | 'bib'> }) {
+  const t = m.bib?.type;
+  if (!t) return <SourceTag type={m.sourceType} />;
+  return (
+    <span className="mtype">
+      <span className={`reftype reftype-${t}`}>{REF_TYPE_LABEL[t]}</span>
+      <SourceTag type={m.sourceType} sub />
+    </span>
+  );
 }
 
 export function Relevance({ value }: { value: number }) {
