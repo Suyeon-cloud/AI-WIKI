@@ -110,20 +110,35 @@ export interface Segment {
   text: string;
 }
 
+/** 이 시간 이내로 붙어 있으면 '이어지는' 큐로 본다 (초) */
+const JOIN = 0.05;
+
 /**
- * 자동 자막은 한 줄이 다음 큐에 다시 나오며 굴러간다 (이전 줄 + 새 줄).
- * 바로 앞 큐에 있던 줄과 직전에 낸 줄은 다시 내지 않는다. 길이 0에 가까운 전환 큐는 버린다.
+ * 표시용 중복만 지우고 실제 반복 발화는 남긴다 (수동·자동 자막 공통).
+ * 지우는 경우
+ *  1) 전환 큐: 0.05초 미만이고 앞 큐에 이미 있던 줄뿐인 큐 (자동 자막의 10ms 큐)
+ *  2) 시간이 겹치는 큐: 앞 큐가 끝나기 전에 시작한 큐에서, 앞 큐에 있던 줄
+ *  3) 굴러가는 줄: 앞 큐에 바로 이어진 큐가 앞 큐의 마지막 줄(들)로 시작하고 그 뒤에 새 줄이 붙은 경우의 앞부분
+ * 남기는 경우: 앞 큐와 똑같은 줄만 있는 큐(새 줄 없음) — 시간이 겹치지 않으면 화자가 다시 말한 것으로 본다
  */
 export function dedupeCues(cues: Cue[]): Segment[] {
   const out: Segment[] = [];
-  let prev: string[] = [];
+  let prev: Cue | undefined;
   for (const c of cues) {
-    if (c.end - c.start < 0.05 && prev.length) continue;
-    for (const l of c.lines) {
-      if (prev.includes(l) || out[out.length - 1]?.text === l) continue;
-      out.push({ start: c.start, text: l });
+    if (prev && c.end - c.start < JOIN && c.lines.every((l) => prev!.lines.includes(l))) continue; // 1)
+    let lines = c.lines;
+    if (prev) {
+      if (c.start < prev.end - JOIN) {
+        lines = lines.filter((l) => !prev!.lines.includes(l)); // 2)
+      } else if (c.start - prev.end <= JOIN) {
+        // 3) 앞 큐 끝부분과 이 큐 앞부분이 겹치는 줄 수 (새 줄이 뒤에 있을 때만 겹침으로 본다)
+        let k = Math.min(prev.lines.length, lines.length - 1);
+        while (k > 0 && !lines.slice(0, k).every((l, i) => l === prev!.lines[prev!.lines.length - k + i])) k--;
+        lines = lines.slice(k);
+      }
     }
-    prev = c.lines;
+    for (const l of lines) out.push({ start: c.start, text: l });
+    prev = c;
   }
   return out;
 }
