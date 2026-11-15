@@ -12,13 +12,15 @@
 //     localStorage.setItem('sb-localhost-auth-token', JSON.stringify({ access_token: 'local-test-token', token_type: 'bearer',
 //       expires_in: 86400, expires_at: Math.floor(Date.now() / 1000) + 86400, refresh_token: 'local-test-refresh',
 //       user: { id: '00000000-0000-4000-8000-0000000000aa', aud: 'authenticated', role: 'authenticated', email: 'local-test@example.invalid', user_metadata: { full_name: '로컬 테스트' }, app_metadata: {} } }))
-//  4) 검증용 주소: GET /__state (서버 이력·저장 기록), GET /__fail-next (다음 저장 한 번 실패)
+//  4) 검증용 주소: GET /__state (서버 이력·저장 기록), GET /__fail-next (다음 저장 한 번 실패),
+//     GET /__material?id=<자료 ID> (저장된 자료 한 건)
+//  5) 선택: 세 번째 인자로 가상 자료 JSON 파일({ "materials": [자료, …] })을 주면 프로젝트 P1에 추가한다.
 import { createServer } from 'node:http';
 import { readdir, readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 
-const [dir, portArg] = process.argv.slice(2);
-if (!dir) throw new Error('사용: node tests/browser/fake-supabase.mjs <빌드 폴더> [port]');
+const [dir, portArg, seedPath] = process.argv.slice(2);
+if (!dir) throw new Error('사용: node tests/browser/fake-supabase.mjs <빌드 폴더> [port] [가상 자료.json]');
 const port = Number(portArg ?? 54329);
 
 // 안전장치: 운영 Supabase 프로젝트 주소(<20자 ref>.supabase.co)가 든 빌드는 서비스하지 않는다
@@ -39,6 +41,14 @@ const db = {
   materials: new Map([['v1', { position: 0, data: material('v1', 'P1', '가상 자료 1') }], ['v2', { position: 1, data: material('v2', 'P1', '가상 자료 2') }], ['v3', { position: 2, data: material('v3', 'P2', '가상 자료 3') }]]),
   log: [], // 받은 저장 요청 기록 (검증용)
 };
+if (seedPath) {
+  const seed = JSON.parse((await readFile(seedPath, 'utf8')).replace(/^﻿/, ''));
+  for (const m of seed.materials ?? []) {
+    const data = { ...material(m.id, 'P1', m.title), ...m };
+    db.materials.set(m.id, { position: db.materials.size, data });
+    db.meta.state.materialOrder.push(m.id);
+  }
+}
 
 const send = (res, status, body, headers = {}) => {
   res.writeHead(status, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'access-control-expose-headers': 'content-range', ...headers });
@@ -83,6 +93,7 @@ createServer(async (req, res) => {
   // ── 검증용 ──
   if (p === '/__state') return send(res, 200, { revision: db.meta.revision, events: db.meta.state.events, materials: [...db.materials.keys()], log: db.log });
   if (p === '/__fail-next') { db.failNext = 1; return send(res, 200, { ok: true }); }
+  if (p === '/__material') return send(res, 200, db.materials.get(url.searchParams.get('id') ?? '')?.data ?? null);
   if (p.startsWith('/api/')) return send(res, 200, { configured: false, message: '로컬 테스트: AI 서버 없음' });
   // ── 정적 파일 (SPA) ──
   const file = normalize(join(dir, p === '/' ? 'index.html' : p));

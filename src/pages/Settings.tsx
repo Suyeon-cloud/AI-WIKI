@@ -5,6 +5,7 @@ import { Card, PageHeader } from '../components/ui';
 import { ImportFlow, downloadBackup } from '../components/ImportExport';
 import { DriveSync } from '../components/DriveSync';
 import { ObsidianSync } from '../components/ObsidianSync';
+import { ClipEnrich } from '../components/ClipEnrich';
 import { useNav } from '../components/ProjectDialog';
 import { useConnections } from '../components/Sidebar';
 import { vaultBaseDir } from '../lib/obsidian';
@@ -86,6 +87,7 @@ export function Settings() {
           </Card>
           <AiSettings />
           <ObsidianSync />
+          <ClipEnrich />
           <div id="drive-settings"><DriveSync /></div>
         </div>
 

@@ -8,6 +8,7 @@ import { USAGE_SECTIONS, type Material, type Origin, type Para, type SourceType,
 import { clampRel, isFullBackup, normBib, normalizeMaterial, parseFullState, pickPresent, type StateParseResult } from './data';
 import { MD_BIB_KEYS, MD_HEADINGS, PARAS, SOURCE_TYPES, isValidUrl } from './utils';
 import { parseYaml, type YamlValue } from './yaml';
+import { clipYear, readClip, type ClipInfo } from './clip-enrich';
 
 export interface ParsedCandidate {
   partial: Partial<Material>;
@@ -68,6 +69,13 @@ const asStr = (v: YamlValue | undefined): string | undefined => {
   const s = String(v).trim();
   return s || undefined;
 };
+
+/** 웹 클리퍼 노트(.md 원문)에서 RISS·KCI·DBpia 논문 정보를 읽는다. AI WIKI가 내보낸 노트·일반 노트는 undefined */
+export function readClipNote(text: string): ClipInfo | undefined {
+  const { meta, body, hasFm } = splitFrontmatter(text);
+  if (!hasFm || asStr(meta.exported_from) === 'AI WIKI' || meta.ai_wiki_id != null) return undefined;
+  return readClip(asStr(meta.source), asStr(meta.published), body);
+}
 
 const asList = (v: YamlValue | undefined): string[] =>
   (Array.isArray(v) ? v.map((x) => (x == null ? '' : String(x))) : typeof v === 'string' ? v.split(',') : [])
@@ -180,8 +188,12 @@ function parseMarkdown(name: string, base: string, text: string, size: number): 
   set('para', PARAS.includes(meta.para as Para) ? (meta.para as Para) : fromApp ? undefined : 'Resources');
   set('relevance', meta.relevance != null ? clampRel(meta.relevance) : undefined);
   set('topic', asStr(meta.topic));
-  const url = asStr(meta.url);
+  // 웹 클리퍼 노트(source·published 키): RISS·KCI·DBpia 상세 페이지면 유형·초록까지 읽는다 (일반 노트는 source를 URL로만)
+  const clip = fromApp ? undefined : readClip(asStr(meta.source), asStr(meta.published), body);
+  const source = fromApp ? undefined : asStr(meta.source);
+  const url = asStr(meta.url) ?? clip?.url ?? (source && isValidUrl(source) && /^https?:/i.test(source) ? source : undefined);
   set('url', url && isValidUrl(url) ? url : undefined);
+  if (clip?.abstract && !clip.abstractWarn) p.abstract = clip.abstract;
   set('youtubeId', asStr(meta.youtube_id));
   set('mimeType', asStr(meta.mime_type));
   set('createdAt', asStr(meta.created));
@@ -204,6 +216,10 @@ function parseMarkdown(name: string, base: string, text: string, size: number): 
   }
   // 유형 키가 없는 일반 노트라도 journal 속성이 있으면 학술지 논문으로 본다 (그 외 유형은 추정하지 않음)
   if (bibRaw.type == null && meta.journal != null) bibRaw.type = 'journal';
+  // 웹 클리퍼 노트: 유형은 근거가 확인된 경우만, 발행연도는 published의 앞 4자리 (명시된 키가 있으면 그 값 우선)
+  if (bibRaw.type == null && clip?.type) bibRaw.type = clip.type;
+  const pubYear = fromApp ? undefined : clipYear(asStr(meta.published));
+  if (bibRaw.year == null && pubYear) bibRaw.year = pubYear;
   const bib = normBib(bibRaw);
   if (bib) p.bib = bib;
 

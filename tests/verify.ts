@@ -9,7 +9,7 @@
  * 서식 예시 중 한글 저자 자료는 검증용 가상 자료다.
  */
 import { buildBackup, normBib, normalizeMaterial, parseFullState, planImport, resolveImport } from '../src/lib/data';
-import { parseImportFile } from '../src/lib/importers';
+import { parseImportFile, readClipNote } from '../src/lib/importers';
 import { materialToMarkdown, markdownToHtml } from '../src/lib/utils';
 import { checkBib, formatCitation, sameAuthorYear, segsToHtml, segsToText, sortForStyle, type CitationStyle } from '../src/lib/citation';
 import { CORRUPT_PREFIX, LEGACY_KEY_V1, STORAGE_KEY, loadState, saveState, type StorageLike } from '../src/lib/persist';
@@ -21,6 +21,7 @@ import { applySaveRecord, changedProjects, eventLabel, formatSave, MAX_EVENTS, p
 import { SaveLoop } from '../src/lib/save-loop';
 import { analyzeTemplate, TEMPLATE_LIMITS, TemplateError, toHwpxTemplate } from '../src/lib/hwpx-template';
 import { checkFootnotes, segmentLine, splitNotes } from '../src/lib/footnotes';
+import { clipAbstract, clipYear, planEnrichment, enrichPatch, type ClipFile } from '../src/lib/clip-enrich';
 import { buildThesisHwpx, thesisXml, zipStore, type ThesisDoc } from '../src/lib/hwpx';
 import sampleThesis from '../.claude/skills/hufs-thesis-writing/examples/sample-thesis.json';
 import type { AppState, Bib, Material } from '../src/types';
@@ -881,6 +882,137 @@ async function coverFitTests() {
   ok(same(buildThesisHwpx(long, when), buildThesisHwpx(long, when, undefined)), '양식 미선택 출력은 변화 없음');
 }
 
+/* ───────── 14. Obsidian 웹 클리퍼 논문 정보 보완 (가상 노트) ───────── */
+
+const clipNote = (o: { source: string; published?: string; body: string; extra?: string }) =>
+  `---\ntitle: "가상 논문"\nsource: "${o.source}"\nauthor:\n  - "[[가상저자]]"\npublished: ${o.published ?? '2024'}\ncreated: 2026-01-01\ndescription: "짧은 설명"\ntags:\n  - "clippings"\n${o.extra ?? ''}---\n${o.body}`;
+const LANG_MENU = '- 한국어\n- 영어\n- 일본어\n- 힌디어';
+const KO1 = '본 연구는 가상의 자료를 이용하여 생성형 인공지능 기반 교육 프로그램의 효과를 검증하였다.';
+const KO2 = '연구 결과 학습자의 몰입도와 이해도가 유의하게 향상되었다(p<.05).';
+const EN1 = 'This virtual study examines a generative AI based program (pilot) and reports its effects.';
+const rissBody = (label: string, abs = true) =>
+  `# 가상 논문\n\n- ${label}: 가상 정보\n- 기타 항목\n\n` +
+  (abs
+    ? `국문 초록 (Abstract)\n\n[한국어](#)\n\n${LANG_MENU}\n\n[영어](#)\n\n${LANG_MENU}\n\n${KO1}\n\n${KO2}\n\n번역하기\n\n${KO1.slice(0, 20)}\n\n${KO1}\n\n${KO2}\n\n[더보기](#)\n\n` +
+      `다국어 초록 (Multilingual Abstract)\n\n[영어](#)\n\n${LANG_MENU}\n\n[한국어](#)\n\n${LANG_MENU}\n\n${EN1.replace('(pilot)', '\\(pilot\\)')}\n\n번역하기\n\n${EN1.slice(0, 30)}\n\n${EN1}\n\n[더보기](#)\n\n`
+    : '') +
+  `목차 (Table of Contents)\n\n- Ⅰ. 서론 1\n- Ⅱ. 이론적 배경 5\n`;
+const RISS_T = 'https://www.riss.kr/search/detail/DetailView.do?p_mat_type=be54d9b8bc7cdb09&control_no=abc123def&keyword=%EA%B0%80%EC%83%81';
+const RISS_J = 'https://www.riss.kr/search/detail/DetailView.do?p_mat_type=1a0202e37d52c72d&control_no=j123&keyword=x';
+const KCI_U = 'https://www.kci.go.kr/kciportal/ci/sereArticleSearch/ciSereArtiView.kci?sereArticleSearchBean.artiId=ART000123&utm=x';
+const kciBody = `[본문 바로가기](#contents)\n\nHOME > 논문 > 논문 상세\n\n# 가상 논문\n\n## 초록 열기/닫기 버튼\n\n${KO1}\n\n${EN1}\n\n## 키워드열기/닫기 버튼\n\n가상키워드\n\n이 키워드로 연구동향 분석\n\n,\n\n둘째키워드\n\n이 키워드로 연구동향 분석\n\n#### 피인용 횟수\n\n- **KCI** 0회\n`;
+const DBPIA_U = 'https://www.dbpia.co.kr/journal/articleDetail?nodeId=NODE00000001&from=search';
+const dbpiaBody = (kind: string, abs = true) =>
+  `[메뉴 건너뛰기](#dpMain)\n\n## 논문 기본 정보\n\n${kind}\n\n가상 학회지 1권 1호\n\n` +
+  (abs ? `## 초록·키워드\n\n${KO1}\n\n${KO2}\n\n[#가상 키워드](https://www.dbpia.co.kr/search/topSearch?searchOption=keyword&query=x) [#AI](https://www.dbpia.co.kr/search/topSearch?query=AI) [#XR (Extended)](https://www.dbpia.co.kr/search/topSearch?query=XR+(Extended))\n\n` : '') +
+  `## 참고문헌 (3)\n\n참고문헌이 궁금하신가요?\n로그인하면 **전체 자료(3편)** 를 확인할 수 있어요.\n`;
+
+async function clipTests() {
+  section('14. Obsidian 웹 클리퍼 노트 → 논문 유형·URL·연도·초록 (가상 노트)');
+  // 유형 판별
+  const rt = readClipNote(clipNote({ source: RISS_T, body: rissBody('학위논문사항') }))!;
+  eq([rt.site, rt.type, rt.url, rt.year], ['riss', 'thesis', 'https://www.riss.kr/search/detail/DetailView.do?p_mat_type=be54d9b8bc7cdb09&control_no=abc123def', '2024'], 'RISS 학위논문: 유형·URL(검색어 제거)·연도');
+  eq(readClipNote(clipNote({ source: RISS_J, body: rissBody('학술지명') }))?.type, 'journal', 'RISS 국내 학술지 → journal');
+  const unknown = readClipNote(clipNote({ source: RISS_T.replace('be54d9b8bc7cdb09', 'ffffffffffffffff'), body: rissBody('학위논문사항') }))!;
+  eq([unknown.type, /확인되지 않은 RISS 유형 코드\(ffffffffffffffff\)/.test(unknown.typeNote)], [undefined, true], '확인되지 않은 RISS 유형 코드 → 미분류 (사유 기록)');
+  const mismatch = readClipNote(clipNote({ source: RISS_T, body: rissBody('학술지명') }))!;
+  eq([mismatch.type, /맞지 않음/.test(mismatch.typeNote)], [undefined, true], 'RISS 유형 코드와 서지 항목 불일치 → 미분류');
+  const noCode = readClipNote(clipNote({ source: 'https://www.riss.kr/search/detail/DetailView.do?control_no=1', body: rissBody('학위논문사항') }))!;
+  eq(noCode.type, undefined, 'RISS 유형 코드 없음 → 미분류');
+  const k = readClipNote(clipNote({ source: KCI_U, body: kciBody }))!;
+  eq([k.type, k.url], ['journal', 'https://www.kci.go.kr/kciportal/ci/sereArticleSearch/ciSereArtiView.kci?sereArticleSearchBean.artiId=ART000123'], 'KCI 논문 상세 → journal, URL은 논문 ID만');
+  eq(readClipNote(clipNote({ source: KCI_U, body: kciBody.replace('HOME > 논문 > 논문 상세', '') }))?.type, undefined, 'KCI 상세 페이지 표시 없음 → 미분류');
+  const d = readClipNote(clipNote({ source: DBPIA_U, published: '2023-05-01', body: dbpiaBody('학술저널') }))!;
+  eq([d.type, d.url, d.year], ['journal', 'https://www.dbpia.co.kr/journal/articleDetail?nodeId=NODE00000001', '2023'], 'DBpia 학술저널 → journal, 날짜형 published → 연도');
+  eq(readClipNote(clipNote({ source: DBPIA_U, body: dbpiaBody('학위논문') }))?.type, 'thesis', "DBpia '학위논문' 표시 → thesis");
+  eq(readClipNote(clipNote({ source: DBPIA_U, body: dbpiaBody('학술대회') }))?.type, undefined, 'DBpia 학술대회 → 미분류');
+  eq(readClipNote(clipNote({ source: DBPIA_U, body: dbpiaBody('') }))?.type, undefined, 'DBpia 자료 유형 표시 없음 → 미분류');
+  eq([clipYear('2024'), clipYear('2024-5-01T00:00:00+09:00'), clipYear('abcd'), clipYear('1800'), clipYear(undefined)], ['2024', '2024', undefined, undefined, undefined], 'published → 연도 (형식·범위 검사)');
+  eq(readClipNote(clipNote({ source: 'https://example.com/a', body: '본문' })), undefined, 'RISS·KCI·DBpia가 아닌 출처 → 대상 아님');
+
+  // 초록 추출·잡음 제거
+  eq(rt.abstract, [KO1, KO2, EN1].join('\n\n'), 'RISS: 언어 메뉴·번역하기·잘린 미리보기·반복·더보기 제거, 국문+다국어, \\( 이스케이프 해제');
+  eq(k.abstract, [KO1, EN1].join('\n\n'), 'KCI: 열기/닫기 제목 제외, 키워드 구간 전까지');
+  eq(d.abstract, [KO1, KO2].join('\n\n'), 'DBpia: 초록·키워드 구간, 키워드 태그 링크·참고문헌·로그인 문구 제외');
+  const noisy = [rt, k, d].map((c) => c.abstract ?? '').join('\n');
+  ok(!/번역하기|\]\(#|^- (한국어|영어)$|이 키워드로|열기\/닫기|로그인하면/m.test(noisy), '추출한 초록에 사이트 화면 문구 없음');
+  const noAbs = readClipNote(clipNote({ source: RISS_T, body: rissBody('학위논문사항', false) }))!;
+  eq([noAbs.abstract, noAbs.abstractWarn, noAbs.type], [undefined, '초록 구간 없음', 'thesis'], '초록 표지 없음 → 초록 없음(경고), 유형은 판별');
+  eq(readClipNote(clipNote({ source: DBPIA_U, body: dbpiaBody('학술저널', false) }))?.abstractWarn, '초록 구간 없음', 'DBpia 초록 구간 없음 → 경고');
+  const onlyMulti = readClipNote(clipNote({ source: RISS_J, body: rissBody('학술지명').replace(/국문 초록 \(Abstract\)[\s\S]*?\[더보기\]\(#\)\n\n/, '') }))!;
+  eq(onlyMulti.abstract, EN1, 'RISS 국문 초록 없이 다국어 초록만 있는 노트');
+  const longAbs = clipAbstract('kci', `## 초록\n\n${'가'.repeat(13000)}\n\n## 키워드\n`);
+  ok(!!longAbs.abstract && /확인 필요/.test(longAbs.warn ?? ''), '비정상적으로 긴 초록 → 경고 (자동 반영 안 함)');
+  eq(clipAbstract('kci', '## 초록\n\n짧음\n\n## 키워드\n'), { warn: '초록이 너무 짧음' }, '너무 짧은 초록 → 반영 안 함');
+
+  section('14-1. 기존 자료와 파일명+크기 1:1 매칭 · 빈 필드만 보완');
+  const bytes = (s: string) => new TextEncoder().encode(s).length;
+  const A = clipNote({ source: RISS_T, body: rissBody('학위논문사항') });
+  const B = clipNote({ source: KCI_U, body: kciBody });
+  const C = clipNote({ source: DBPIA_U, published: '2023-05-01', body: dbpiaBody('학술저널') });
+  const exported = materialToMarkdown(mat(undefined, { title: '내보낸 노트', fileName: undefined }));
+  const md = (over: Partial<Material>): Material =>
+    mat({ author: '가상저자', year: '', publisher: '' }, { sourceType: 'Markdown', content: '원래 본문', myView: '내 관점', researchMemo: '연구 메모', researchLink: '연결', ...over });
+  const mA = md({ id: 'mA', title: '자료 A', fileName: 'a.md', fileSize: bytes(A) });
+  const mSize = md({ id: 'mB', title: '크기 다른 자료', fileName: 'b.md', fileSize: bytes(B) + 1 });
+  const mC1 = md({ id: 'mC1', title: '같은 파일 1', fileName: 'c.md', fileSize: bytes(C) });
+  const mC2 = md({ id: 'mC2', title: '같은 파일 2', fileName: 'c.md', fileSize: bytes(C) });
+  const mD = md({ id: 'mD', title: '값 있는 자료', fileName: 'd.md', fileSize: bytes(B), url: 'https://example.com/kept', abstract: '기존 초록', bib: { author: '가상저자', year: '', publisher: '가상출판', type: 'thesis' } });
+  const mPdf = mat(undefined, { id: 'mP', title: 'PDF 자료', sourceType: 'PDF', fileName: 'e.md', fileSize: bytes(A) });
+  const mFull = md({ id: 'mF', title: '모두 채운 자료', fileName: 'g.md', fileSize: bytes(C), url: 'https://www.dbpia.co.kr/journal/articleDetail?nodeId=NODE00000001', abstract: [KO1, KO2].join('\n\n'), bib: { author: '가상저자', year: '2023', publisher: '', type: 'journal' } });
+  const mExp = md({ id: 'mE', title: '앱 노트', fileName: 'h.md', fileSize: bytes(exported) });
+  const materials = [mA, mSize, mC1, mC2, mD, mPdf, mFull, mExp];
+  const files: ClipFile[] = [
+    { name: 'a.md', size: bytes(A), text: A },
+    { name: 'b.md', size: bytes(B), text: B },
+    { name: 'c.md', size: bytes(C), text: C },
+    { name: 'd.md', size: bytes(B), text: B },
+    { name: 'e.md', size: bytes(A), text: A },
+    { name: 'f.md', size: bytes(A), text: A },
+    { name: 'f.md', size: bytes(A), text: A },
+    { name: 'g.md', size: bytes(C), text: C },
+    { name: 'h.md', size: bytes(exported), text: exported },
+    { name: 'z.txt', size: 3, text: 'abc' },
+  ];
+  const plan = planEnrichment(materials, files, readClipNote);
+  eq(plan.rows.map((r) => [r.file.name, r.material.id]), [['a.md', 'mA'], ['d.md', 'mD']], '파일명+크기가 1:1로 맞는 자료만 보완 대상');
+  eq(plan.skipped.map((s) => [s.name, s.reason]), [
+    ['b.md', 'size-mismatch'], ['c.md', 'dup-material'], ['e.md', 'no-material'], ['f.md', 'dup-file'], ['f.md', 'dup-file'],
+    ['g.md', 'nothing'], ['h.md', 'not-clip'], ['z.txt', 'not-md'],
+  ], '불일치·중복·PDF 자료·앱 노트·채울 것 없음은 모두 제외 (사유별)');
+  const rowA = plan.rows[0];
+  eq(rowA.changes.map((c) => c.field), ['url', 'type', 'year', 'abstract'], '빈 필드 4개 모두 보완 후보');
+  const rowD = plan.rows[1];
+  eq([rowD.changes.map((c) => c.field), rowD.conflicts.map((c) => [c.field, c.before])], [['year'], [['url', 'https://example.com/kept'], ['type', 'thesis'], ['abstract', '기존 초록']]], '값이 있는 필드는 충돌로만 표시하고 빈 연도만 보완');
+
+  const pA = enrichPatch(mA, rowA.changes);
+  const afterA = { ...mA, ...pA };
+  eq(Object.keys(pA).sort(), ['abstract', 'bib', 'url'], 'patch는 url·abstract·bib만');
+  eq(afterA.bib, { author: '가상저자', authors: ['가상저자'], year: '2024', publisher: '', type: 'thesis' }, 'bib는 기존 저자 유지 + 유형·연도만 채움');
+  eq([afterA.content, afterA.myView, afterA.researchMemo, afterA.researchLink, afterA.title, afterA.fileName, afterA.fileSize], [mA.content, '내 관점', '연구 메모', '연결', '자료 A', 'a.md', bytes(A)], '본문·내 관점·메모·연결·제목·파일 정보 보존');
+  const pD = enrichPatch(mD, rowD.changes);
+  eq(pD, { bib: { author: '가상저자', authors: ['가상저자'], year: '2024', publisher: '가상출판', type: 'thesis' } }, '충돌 필드는 바꾸지 않고 기존 bib 항목 유지');
+  eq(enrichPatch(mA, rowA.changes.filter((c) => c.field === 'type')), { bib: { ...mA.bib, type: 'thesis' } }, '승인한 필드만 반영 (선택 해제한 필드 제외)');
+  eq(enrichPatch({ ...mA, url: 'https://filled.example' }, rowA.changes).url, undefined, '반영 직전에 채워진 필드는 덮어쓰지 않음');
+  const again = planEnrichment([afterA, ...materials.slice(1)], files.slice(0, 1), readClipNote);
+  eq([again.rows.length, again.skipped.map((s) => s.reason)], [0, ['nothing']], '보완 후 다시 실행해도 변경 없음 (중복 반영 없음)');
+  const noAbsNote = clipNote({ source: RISS_T, body: rissBody('학위논문사항', false) });
+  const warnRow = planEnrichment([md({ id: 'w', fileName: 'w.md', fileSize: bytes(noAbsNote) })], [{ name: 'w.md', size: bytes(noAbsNote), text: noAbsNote }], readClipNote).rows[0];
+  eq(warnRow.changes.map((c) => c.field), ['url', 'type', 'year'], '초록을 못 찾은 노트는 초록 없이 나머지만 후보');
+
+  section('14-2. 새 Obsidian 가져오기에도 같은 매핑');
+  const [ni] = await materialsOf('a.md', A);
+  eq([ni.partial.url, ni.partial.bib?.type, ni.partial.bib?.year, ni.partial.abstract], [rt.url, 'thesis', '2024', rt.abstract], '웹 클리퍼 노트 가져오기: URL·유형·연도·초록');
+  ok((ni.partial.content ?? '').includes('국문 초록 (Abstract)') && ni.partial.fileName === 'a.md' && ni.partial.fileSize === bytes(A), '가져온 본문(content)·파일 정보는 기존 방식 그대로');
+  const [gen] = await materialsOf('g.md', '---\ntitle: 일반 클립\nsource: https://example.com/post\npublished: 2021-03-04\n---\n본문');
+  eq([gen.partial.url, gen.partial.bib?.type, gen.partial.abstract], ['https://example.com/post', undefined, undefined], '일반 웹 클립: source → URL만, 유형·초록 추정 안 함');
+  const [explicit] = await materialsOf('x.md', clipNote({ source: KCI_U, body: kciBody, extra: 'url: https://example.com/mine\nyear: 2019\nref_type: book\n' }));
+  eq([explicit.partial.url, explicit.partial.bib?.year, explicit.partial.bib?.type], ['https://example.com/mine', '2019', 'book'], '노트에 url·year·ref_type이 있으면 그 값 우선');
+  const [noWarn] = await materialsOf('n.md', clipNote({ source: DBPIA_U, body: dbpiaBody('학술저널', false) }));
+  eq(noWarn.partial.abstract, undefined, '초록 경고가 있으면 가져오기에서도 초록 비움');
+  eq(readClipNote(exported), undefined, 'AI WIKI가 내보낸 노트는 웹 클리퍼 매핑 대상 아님');
+}
+
 (async () => {
   await storageTests();
   await backupTests();
@@ -895,6 +1027,7 @@ async function coverFitTests() {
   await templateTests();
   await templateOutputTests();
   await coverFitTests();
+  await clipTests();
   console.log(`\n${failed ? '실패' : '모두 통과'}: ${passed}건 통과, ${failed}건 실패`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => {

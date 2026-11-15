@@ -754,3 +754,20 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 
 .template-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .template-opt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 4px; }
+
+/* Obsidian 논문 정보 보완 */
+.clip-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+.clip-pick label.btn { cursor: pointer; }
+.clip-review { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; }
+.clip-skipped { max-height: 180px; overflow: auto; margin: 6px 0; padding-left: 18px; overflow-wrap: anywhere; }
+.clip-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.clip-rows { list-style: none; margin: 0; padding: 0; max-height: 560px; overflow: auto; }
+.clip-rows > li { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 6px; background: #fff; }
+.clip-rows > li.on { border-color: var(--accent); background: var(--accent-soft); }
+.clip-row-head { display: flex; align-items: baseline; gap: 6px; cursor: pointer; overflow-wrap: anywhere; }
+.clip-row-head .chip { margin: 0 0 0 auto; flex: none; }
+.clip-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 6px 0 0 22px; }
+.clip-field { display: inline-flex; align-items: center; gap: 4px; }
+.clip-val { color: var(--muted); overflow-wrap: anywhere; }
+.clip-abstract { margin: 6px 0 0 22px; color: #444; }
+.clip-abstract p { margin: 0 0 4px; white-space: pre-wrap; line-height: 1.55; }
