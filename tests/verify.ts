@@ -21,7 +21,7 @@ import { applySaveRecord, changedProjects, eventLabel, formatSave, MAX_EVENTS, p
 import { SaveLoop } from '../src/lib/save-loop';
 import { analyzeTemplate, TEMPLATE_LIMITS, TemplateError, toHwpxTemplate } from '../src/lib/hwpx-template';
 import { checkFootnotes, segmentLine, splitNotes } from '../src/lib/footnotes';
-import { clipAbstract, clipYear, planEnrichment, enrichPatch, type ClipFile } from '../src/lib/clip-enrich';
+import { clipAbstract, clipYear, defaultEnrichFields, enrichPatch, planEnrichment, reviewReasons, summarizeSelection, type ClipFile, type EnrichField } from '../src/lib/clip-enrich';
 import { matchBibQuery, matchRefType } from '../src/lib/bib-search';
 import { buildThesisHwpx, thesisXml, zipStore, type ThesisDoc } from '../src/lib/hwpx';
 import sampleThesis from '../.claude/skills/hufs-thesis-writing/examples/sample-thesis.json';
@@ -1012,6 +1012,33 @@ async function clipTests() {
   const [noWarn] = await materialsOf('n.md', clipNote({ source: DBPIA_U, body: dbpiaBody('학술저널', false) }));
   eq(noWarn.partial.abstract, undefined, '초록 경고가 있으면 가져오기에서도 초록 비움');
   eq(readClipNote(exported), undefined, 'AI WIKI가 내보낸 노트는 웹 클리퍼 매핑 대상 아님');
+
+  section('14-3. 안전 후보 · 수동 검토 구분, 저장 전 요약');
+  const rowOf = (text: string, over: Partial<Material> = {}) =>
+    planEnrichment([md({ id: over.id ?? 'x', fileName: 'x.md', fileSize: bytes(text), ...over })], [{ name: 'x.md', size: bytes(text), text }], readClipNote).rows[0];
+  const kciWith = (abs: string) => clipNote({ source: KCI_U, body: kciBody.replace(`${KO1}\n\n${EN1}`, abs) });
+  eq(reviewReasons(rowA), [], '모든 조건 통과 → 안전 후보');
+  eq([...defaultEnrichFields(rowA)], ['url', 'type', 'year', 'abstract'], '안전 후보는 모든 필드 기본 선택');
+  eq(reviewReasons(warnRow), ['abstract-missing'], '초록 없음 → 검토');
+  const conf = rowOf(clipNote({ source: DBPIA_U, body: dbpiaBody('학술대회') }));
+  eq(reviewReasons(conf), ['type-unclassified'], '유형 미분류 → 검토');
+  eq(reviewReasons(rowOf(clipNote({ source: DBPIA_U, body: dbpiaBody('학술대회') }), { bib: { author: '가상저자', year: '', publisher: '', type: 'book' } })), [], '자료에 유형이 이미 있으면 미분류 사유 아님');
+  const long8 = rowOf(kciWith('가'.repeat(9000)));
+  eq([reviewReasons(long8), defaultEnrichFields(long8).has('abstract')], [['abstract-8000'], false], '초록 8천 자 이상 → 검토, 초록 기본 제외');
+  eq(reviewReasons(rowOf(kciWith('가'.repeat(13000)))), ['abstract-long'], '초록 1만2천 자 초과 → 과도하게 김 (8천 자 사유와 중복 표시 안 함)');
+  eq(reviewReasons(rowOf(kciWith('짧은 초록'))), ['abstract-short'], '초록 너무 짧음 → 검토');
+  eq(reviewReasons(rowOf(kciWith('가'.repeat(9000)), { abstract: '기존 초록' })), [], '자료에 초록이 이미 있으면 초록 사유 아님');
+  const yr = rowOf(A, { bib: { author: '가상저자', year: '2000', publisher: '' } });
+  eq([reviewReasons(yr), yr.changes.some((c) => c.field === 'year')], [['year-conflict'], false], '기존 연도와 다름 → 검토 (연도는 바꾸지 않음)');
+  eq(reviewReasons(rowOf(A, { bib: { author: '가상저자', year: '', publisher: '', type: 'journal' } })), ['type-conflict'], '기존 유형과 다름 → 검토');
+
+  const rs = [rowA, warnRow, long8];
+  const fieldsOf = Object.fromEntries(rs.map((r) => [r.material.id, defaultEnrichFields(r)]));
+  const safeOnly = new Set(rs.filter((r) => !reviewReasons(r).length).map((r) => r.material.id));
+  eq(summarizeSelection(rs, safeOnly, fieldsOf), { count: 1, review: 0, byField: { url: 1, type: 1, year: 1, abstract: 1 } }, '안전 후보만 선택: 검토 대상 제외, 필드별 변경 수');
+  eq(summarizeSelection(rs, new Set(rs.map((r) => r.material.id)), fieldsOf), { count: 3, review: 2, byField: { url: 3, type: 3, year: 3, abstract: 1 } }, '전체 선택: 검토 포함 수와 기본 제외된 초록 반영');
+  eq(summarizeSelection(rs, new Set(['mA']), { mA: new Set<EnrichField>(['type']) }).byField, { url: 0, type: 1, year: 0, abstract: 0 }, '선택 해제한 필드는 변경 수에서 제외');
+  eq(summarizeSelection(rs, new Set(['mA']), { mA: new Set<EnrichField>() }).count, 0, '필드를 모두 뺀 자료는 건수에서 제외');
 }
 
 /* ───────── 15. 참고문헌 후보 검색·서지 유형 필터 ───────── */

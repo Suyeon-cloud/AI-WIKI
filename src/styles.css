@@ -778,3 +778,10 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 .reftype-thesis { background: #f3ecfa; color: #5b3a8c; }
 .reftype-journal { background: #e8f3ec; color: #24683f; }
 .src.src-sub { font-size: 10px; font-weight: 500; padding: 0 5px; background: transparent; border: 1px solid var(--line); color: var(--muted); }
+.clip-safe { background: var(--real-bg); color: var(--real); }
+.clip-warn { background: #fff0e0; color: #a35a00; }
+.clip-view { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.clip-rows > li.needs-review { border-left: 3px solid #f1b46a; }
+.clip-row-head .ok-tag, .clip-row-head .warn-tag { flex: none; }
+.clip-reasons { margin: 4px 0 0 22px; color: #a35a00; overflow-wrap: anywhere; }
+.clip-summary { margin: 8px 0; max-width: 320px; }

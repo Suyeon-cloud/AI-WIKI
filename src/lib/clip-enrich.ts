@@ -277,6 +277,74 @@ export function enrichPatch(m: Material, changes: FieldChange[]): Partial<Materi
   return patch;
 }
 
+/* ───────── 안전 후보 · 수동 검토 구분 ───────── */
+
+/** 이 길이 이상인 초록은 앱 경고(ABSTRACT_MAX)가 없어도 사람이 확인한다 */
+export const REVIEW_ABSTRACT_LEN = 8000;
+
+export type ReviewReason = 'type-unclassified' | 'abstract-missing' | 'abstract-short' | 'abstract-long' | 'abstract-ui-text' | 'abstract-8000' | 'year-conflict' | 'type-conflict';
+export const REVIEW_LABEL: Record<ReviewReason, string> = {
+  'type-unclassified': '논문 유형 미분류',
+  'abstract-missing': '초록 없음',
+  'abstract-short': '초록 너무 짧음',
+  'abstract-long': '초록 과도하게 김',
+  'abstract-ui-text': '초록에 화면 문구 의심',
+  'abstract-8000': `초록 ${REVIEW_ABSTRACT_LEN.toLocaleString()}자 이상`,
+  'year-conflict': '기존 연도와 다름',
+  'type-conflict': '기존 유형과 다름',
+};
+
+/**
+ * 수동 검토 사유 (없으면 안전 후보). 이미 값이 있는 필드는 보완 대상이 아니므로
+ * 유형·초록 사유는 자료의 해당 필드가 비어 있을 때만 따진다.
+ */
+export function reviewReasons(r: Pick<EnrichRow, 'material' | 'clip' | 'changes' | 'conflicts'>): ReviewReason[] {
+  const out: ReviewReason[] = [];
+  if (!r.clip.type && !r.material.bib?.type) out.push('type-unclassified');
+  if (blank(r.material.abstract)) {
+    const w = r.clip.abstractWarn ?? '';
+    if (w) out.push(/너무 짧/.test(w) ? 'abstract-short' : /김/.test(w) ? 'abstract-long' : /화면 문구/.test(w) ? 'abstract-ui-text' : 'abstract-missing');
+    const abs = r.changes.find((c) => c.field === 'abstract');
+    if (abs && abs.after.length >= REVIEW_ABSTRACT_LEN && !/김/.test(w)) out.push('abstract-8000');
+  }
+  if (r.conflicts.some((c) => c.field === 'year')) out.push('year-conflict');
+  if (r.conflicts.some((c) => c.field === 'type')) out.push('type-conflict');
+  return out;
+}
+
+/** 행별 기본 반영 필드: 경고가 있거나 검토 길이를 넘는 초록은 기본 제외 */
+export function defaultEnrichFields(r: EnrichRow): Set<EnrichField> {
+  const risky = reviewReasons(r).some((x) => x.startsWith('abstract-'));
+  return new Set(r.changes.filter((c) => !(c.field === 'abstract' && (risky || r.clip.abstractWarn))).map((c) => c.field));
+}
+
+/** 저장 전 확인용: 선택한 자료 수와 필드별 변경 수 (빈 필드만 계산) */
+export function summarizeSelection(rows: EnrichRow[], approved: Set<string>, fields: Record<string, Set<EnrichField>>) {
+  const byField: Record<EnrichField, number> = { url: 0, type: 0, year: 0, abstract: 0 };
+  let count = 0;
+  let review = 0;
+  for (const r of rows) {
+    if (!approved.has(r.material.id)) continue;
+    const picked = enrichPatchFields(r.material, r.changes.filter((c) => fields[r.material.id]?.has(c.field)));
+    if (!picked.length) continue;
+    count++;
+    if (reviewReasons(r).length) review++;
+    for (const f of picked) byField[f]++;
+  }
+  return { count, review, byField };
+}
+
+/** enrichPatch가 실제로 채우는 필드 목록 */
+export function enrichPatchFields(m: Material, changes: FieldChange[]): EnrichField[] {
+  const p = enrichPatch(m, changes);
+  const out: EnrichField[] = [];
+  if (p.url !== undefined) out.push('url');
+  if (p.bib && p.bib.type !== m.bib?.type) out.push('type');
+  if (p.bib && p.bib.year !== m.bib?.year) out.push('year');
+  if (p.abstract !== undefined) out.push('abstract');
+  return out;
+}
+
 /**
  * 볼트 파일과 기존 Markdown 자료를 파일명+크기로 1:1 짝짓고 보완 계획을 만든다.
  * 애매한 경우(파일·자료 중복, 크기 불일치)는 모두 제외한다.
