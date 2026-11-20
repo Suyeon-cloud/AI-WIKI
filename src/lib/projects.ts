@@ -2,6 +2,7 @@
  * v3 데이터: 연구 프로젝트 · 프로젝트 이력 · AI 산출물 · 학위논문 집필 상태의 생성·정규화.
  * 저장 데이터·백업 파일에서 읽은 값을 검증해 쓰며, 알 수 없는 값은 버리고 기본값을 사용한다.
  */
+import { withEdits } from './analysis-edits';
 import {
   AI_OUTPUT_KINDS,
   PROJECT_STATUSES,
@@ -162,7 +163,7 @@ export function aiMaterialToOutput(m: Material, projectId: string): AiOutput {
     title: m.title,
     createdAt: m.createdAt,
     model: '',
-    content: m.content ?? m.analysis?.summary ?? '',
+    content: m.content ?? withEdits(m.analysis)?.summary ?? '',
     materialIds: [],
   };
 }

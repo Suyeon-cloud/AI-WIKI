@@ -25,6 +25,7 @@ import { clipAbstract, clipYear, defaultEnrichFields, enrichPatch, planEnrichmen
 import { matchBibQuery, matchRefType } from '../src/lib/bib-search';
 import { TranscriptError, buildTranscriptNote, dedupeCues, formatTime, groupSegments, parseVtt, pickTrack, ytdlpError, type YtInfo } from '../src/lib/yt-transcript';
 import { joinItems } from '../src/lib/pdf-text';
+import { editedKeys, normEdits, revertEdit, setEdit, withEdits } from '../src/lib/analysis-edits';
 import { assessQuality, buildFullText, docHash, evidenceMarkdown, evidenceMatch, fixChapterLine, manualSelection, roleOf, sectionsInPages, structureWarnings, estimateTokens, fullTextMeta, queryTerms, sectionsBlock, selectSections, validDoc, verifyEvidence } from '../src/lib/fulltext';
 import { costUsd, estimate, normCost, usageCost } from '../src/lib/ai-cost';
 import { thesisContext } from '../src/lib/prompts';
@@ -1402,6 +1403,27 @@ async function fulltextTests() {
   const big = manualSelection(td.sections, td.sections.map((x) => x.id), 24000);
   ok(big.overBudget && big.warnings[0].includes('24,000자'), '한도를 넘게 고르면 잘라 보내지 않고 초과로 표시 (실행 막음)');
   eq(manualSelection(td.sections, ['없는-id'], 24000).sections, [], '모르는 조각 id는 무시');
+  section('17-8. AI 분석 결과 직접 수정 · 원본 보존 · 되돌리기 · 새로고침 후 유지');
+  const aiA = { summary: '조아라(2025)는 AI 미디어를 분석했다.', topic: 'AI 미디어', keywords: ['AI', '미디어'], relevance: 4, rationale: '관련 높음', connection: '접점', insights: ['통찰1'], citationCandidate: '', method: '사례 분석', findings: '결과', model: 'claude-x', analyzedAt: '2026-11-01T00:00:00.000Z', basis: 'fulltext' as const, cacheKey: 'k1', evidence: [{ section: '1장', quote: '원문', verified: true, match: 'exact' as const }], sources: { hash: 'h', sectionIds: ['s1'] }, usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.01 } };
+  const e1 = setEdit(aiA, 'summary', '조아라(2026)는 AI 미디어를 분석했다. ');
+  ok(e1.summary === aiA.summary && e1.edits?.summary === '조아라(2026)는 AI 미디어를 분석했다.', 'AI 원본은 그대로, 수정본은 따로 저장 (앞뒤 공백 정리)');
+  ok(withEdits(e1).summary.includes('2026') && withEdits(e1).method === '사례 분석', '표시값 = 수정본 우선, 고치지 않은 항목은 원본');
+  const e2 = setEdit(e1, 'keywords', ['AI', ' 큐레이션 ', '']);
+  eq(withEdits(e2).keywords, ['AI', '큐레이션'], '목록 항목(키워드)은 한 줄에 하나씩, 빈 줄 제외');
+  eq(editedKeys(e2), ['summary', 'keywords'], '수정된 항목 목록');
+  const e3 = revertEdit(e2, 'summary');
+  ok(withEdits(e3).summary === aiA.summary && editedKeys(e3).join() === 'keywords', '원본으로 되돌리기 (다른 수정본은 유지)');
+  const e4 = revertEdit(e3, 'keywords');
+  ok(e4.edits === undefined && e4.editedAt === undefined && JSON.stringify(e4) === JSON.stringify(aiA), '모두 되돌리면 원래 분석과 완전히 같음');
+  ok(setEdit(aiA, 'summary', aiA.summary).edits === undefined, '원본과 같은 내용으로 저장하면 수정본을 만들지 않음');
+  const stored = normalizeMaterial(JSON.parse(JSON.stringify({ id: 'jo', title: '조아라 논문', sourceType: 'PDF', createdAt: '2026-01-01T00:00:00.000Z', analysis: e2 })))!;
+  ok(stored.analysis?.edits?.summary === e2.edits?.summary && JSON.stringify(stored.analysis?.edits?.keywords) === JSON.stringify(['AI', '큐레이션']) && !!stored.analysis?.editedAt, '저장 후 다시 읽어도(새로고침) 수정본 유지');
+  ok(stored.analysis?.summary === aiA.summary && stored.analysis?.cacheKey === 'k1' && stored.analysis?.evidence?.[0].verified === true && stored.analysis?.sources?.sectionIds[0] === 's1' && stored.analysis?.usage?.costUsd === 0.01, '원본·근거·원문 출처·사용량 등 기존 분석 기록 보존');
+  eq(normEdits({ summary: 'x', relevance: 5, keywords: 'not-array', bogus: 'y' }), { summary: 'x' }, '알 수 없는 키·잘못된 형식의 수정본은 버림');
+  ok(normalizeMaterial({ id: 'old', title: 't', sourceType: 'PDF', createdAt: '2026-01-01T00:00:00.000Z', analysis: aiA })!.analysis?.edits === undefined, '수정본이 없는 기존 분석은 그대로 읽힘');
+  const block = compactBlock({ ...stored, analysis: stored.analysis }, 0);
+  ok(block.includes('2026') && !block.includes('조아라(2025)'), '전체 분석에는 수정본을 사용');
+  ok(cacheHit({ ...stored }, 'k1'), '수정해도 분석 캐시 키는 그대로 (AI 재호출 불필요)');
 
 }
 

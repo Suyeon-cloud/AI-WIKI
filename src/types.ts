@@ -38,7 +38,13 @@ export interface Analysis {
   evidence?: AnalysisEvidence[]; // 원문 근거 인용 (로컬에서 원문 일치 확인)
   usage?: { inputTokens: number; outputTokens: number; costUsd: number };
   sources?: { hash: string; sectionIds: string[] }; // 분석에 실제로 보낸 원문 절 (원문 해시 기준)
+  // v5: 사용자 수정본 (AI 원본 필드는 그대로 두고 따로 저장)
+  edits?: AnalysisEdits;
+  editedAt?: string;
 }
+
+/** 사용자가 고친 항목만 담는다. 없는 항목은 AI 원본을 쓴다. */
+export type AnalysisEdits = Partial<Pick<Analysis, 'summary' | 'topic' | 'rationale' | 'method' | 'findings' | 'connection' | 'limitations' | 'usageIdea' | 'citationCandidate' | 'insights' | 'keywords'>>;
 
 export type AnalysisBasis = 'abstract' | 'fulltext';
 export interface AnalysisEvidence {

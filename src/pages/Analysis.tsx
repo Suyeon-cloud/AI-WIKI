@@ -19,6 +19,7 @@ import {
 import { CostConfirm, ModelSelect, useCostSettings } from '../components/CostConfirm';
 import { FullTextPanel, fullTextWarnings } from '../components/FullTextPanel';
 import { SectionPicker } from '../components/SectionPicker';
+import { EDITABLE_FIELDS, editedKeys, isListKey, originalOf, revertEdit, setEdit, withEdits, type EditKey } from '../lib/analysis-edits';
 import { uid } from '../lib/utils';
 import { bibAuthors } from '../lib/citation';
 import {
@@ -261,20 +262,69 @@ function EvidenceList({ a }: { a: AnalysisT }) {
   );
 }
 
+/** AI 분석 항목 하나: 보기 · 직접 수정 · 원본 보기 · 원본으로 되돌리기 (AI 원본은 그대로 보존) */
+function EditableField({ a, m, k, className, children }: { a: AnalysisT; m: Material; k: EditKey; className?: string; children: (v: AnalysisT) => ReactNode }) {
+  const { dispatch, toast } = useStore();
+  const label = EDITABLE_FIELDS.find((f) => f.key === k)!.label;
+  const list = isListKey(k);
+  const edited = a.edits?.[k] !== undefined;
+  const cur = withEdits(a);
+  const text = (v: string | string[]) => (Array.isArray(v) ? v.join('\n') : v);
+  const [draft, setDraft] = useState<string | null>(null);
+  const save = (next: AnalysisT, msg: string) => {
+    dispatch({ type: 'update', id: m.id, patch: { analysis: next } });
+    toast(msg);
+  };
+  return (
+    <div className={`result-item ${className ?? ''}`}>
+      <h4>
+        {label} {edited && <span className="ok-tag small">수정됨</span>}
+        {draft === null && <button type="button" className="btn-link small" onClick={() => setDraft(text(originalOf(cur, k)))}>수정</button>}
+      </h4>
+      {draft !== null ? (
+        <div className="field-edit">
+          <textarea rows={list ? 5 : 4} value={draft} onChange={(e) => setDraft(e.target.value)} aria-label={`${label} 수정`} />
+          {list && <span className="muted small">한 줄에 하나씩 입력합니다.</span>}
+          <div className="actions">
+            <button type="button" className="btn btn-sm btn-primary" onClick={() => { save(setEdit(a, k, list ? draft.split('\n') : draft), `‘${label}’ 수정본을 저장했습니다 (AI 원본은 보존).`); setDraft(null); }}>저장</button>
+            <button type="button" className="btn btn-sm" onClick={() => setDraft(null)}>취소</button>
+          </div>
+        </div>
+      ) : (
+        children(cur)
+      )}
+      {edited && draft === null && (
+        <details className="small edit-original">
+          <summary>AI 원본 보기</summary>
+          <pre>{text(originalOf(a, k)) || '(비어 있음)'}</pre>
+          <button type="button" className="btn-link small" onClick={() => save(revertEdit(a, k), `‘${label}’을(를) AI 원본으로 되돌렸습니다.`)}>원본으로 되돌리기</button>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function PaperView({ a, m }: { a: AnalysisT; m: Material }) {
+  const F = (k: EditKey, render: (v: AnalysisT) => ReactNode, cls?: string) => <EditableField key={k} a={a} m={m} k={k} className={cls}>{render}</EditableField>;
+  const n = editedKeys(a).length;
   return (
     <div className="result-grid">
-      <div className="result-item span-2"><AnalysisMeta a={a} /><UsedSource a={a} m={m} /></div>
-      <div className="result-item span-2"><h4>요약</h4><p>{a.summary}</p></div>
-      <div className="result-item"><h4>핵심 주제</h4><p>{a.topic}</p></div>
-      <div className="result-item"><h4>관련도</h4><p><Relevance value={a.relevance} /> {a.rationale}</p></div>
-      {a.method && <div className="result-item"><h4>연구 방법</h4><p>{a.method}</p></div>}
-      {a.findings && <div className="result-item"><h4>주요 결과</h4><p>{a.findings}</p></div>}
-      <div className="result-item span-2"><h4>내 논문과의 접점</h4><p>{a.connection}</p></div>
-      <div className="result-item span-2"><h4>인사이트</h4><ul>{a.insights.map((i) => <li key={i}>{i}</li>)}</ul></div>
-      {a.limitations && <div className="result-item"><h4>한계</h4><p>{a.limitations}</p></div>}
-      {a.usageIdea && <div className="result-item"><h4>활용 제안</h4><p>{a.usageIdea}</p></div>}
-      <div className="result-item span-2"><h4>핵심 키워드</h4><div className="chips">{a.keywords.map((k) => <span key={k} className="chip">{k}</span>)}</div></div>
+      <div className="result-item span-2">
+        <AnalysisMeta a={a} />
+        {n > 0 && <p className="small muted">직접 수정한 항목 {n}개 — 화면·전체 분석에는 수정본을 쓰고, AI 원본은 각 항목의 ‘AI 원본 보기’에 보존됩니다.</p>}
+        <UsedSource a={a} m={m} />
+      </div>
+      {F('summary', (v) => <p>{v.summary}</p>, 'span-2')}
+      {F('topic', (v) => <p>{v.topic}</p>)}
+      {F('rationale', (v) => <p><Relevance value={v.relevance} /> {v.rationale}</p>)}
+      {(a.method || a.edits?.method !== undefined) && F('method', (v) => <p>{v.method}</p>)}
+      {(a.findings || a.edits?.findings !== undefined) && F('findings', (v) => <p>{v.findings}</p>)}
+      {F('connection', (v) => <p>{v.connection}</p>, 'span-2')}
+      {F('insights', (v) => <ul>{v.insights.map((i) => <li key={i}>{i}</li>)}</ul>, 'span-2')}
+      {(a.limitations || a.edits?.limitations !== undefined) && F('limitations', (v) => <p>{v.limitations}</p>)}
+      {(a.usageIdea || a.edits?.usageIdea !== undefined) && F('usageIdea', (v) => <p>{v.usageIdea}</p>)}
+      {(a.citationCandidate || a.edits?.citationCandidate !== undefined) && F('citationCandidate', (v) => <p>{v.citationCandidate}</p>, 'span-2')}
+      {F('keywords', (v) => <div className="chips">{v.keywords.map((k) => <span key={k} className="chip">{k}</span>)}</div>, 'span-2')}
       <EvidenceList a={a} />
     </div>
   );
@@ -447,6 +497,7 @@ export function Analysis() {
         notes: [
           `근거: ${basis === 'fulltext' ? '원문 기반' : '초록 기반'} — ${req.scope}`,
           m.analysis?.analyzedAt ? '이 논문의 기존 AI 분석은 새 결과로 바뀝니다. 나의 관점·연구 기록은 그대로입니다.' : '',
+          m.analysis && editedKeys(m.analysis).length ? `직접 수정한 항목 ${editedKeys(m.analysis).length}개는 새 분석으로 바뀌기 전에 수정본 그대로 분석 기록에 따로 보관합니다.` : '',
         ].filter(Boolean),
         // 장·절 인식 경고는 직접 선택할 때도 참고로 보여 준다
         warnings: basis === 'fulltext' ? [...fullTextWarnings(m), ...(autoReq.selection?.warnings ?? [])] : [],
@@ -471,6 +522,8 @@ export function Analysis() {
         signal,
       });
       const a = finishPaper({ data, basis: doc ? 'fulltext' : 'abstract', doc, scope: req.scope, model: used || model, usage, prices: cost.prices, cacheKey: key, sectionIds: req.selection?.sections.map((s) => s.id) });
+      const prev = m.analysis && editedKeys(m.analysis).length ? m.analysis : undefined;
+      if (prev) dispatch({ type: 'addOutput', output: { id: uid(), projectId: project!.id, kind: '개별 분석', title: `논문 분석 (수정본 보관) — ${m.title}`, createdAt: new Date().toISOString(), model: prev.model ?? model, content: paperToMarkdown(withEdits(prev), m), materialIds: [m.id] } });
       dispatch({ type: 'update', id: m.id, patch: { analysis: a } });
       const evidence = a.evidence?.length
         ? `\n\n## 원문 근거\n${evidenceMarkdown(a.evidence)}`

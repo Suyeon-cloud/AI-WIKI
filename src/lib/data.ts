@@ -5,6 +5,7 @@
  * - 전체 상태 백업 파일 생성·검증
  * - 가져오기 전 추가/갱신/충돌/중복 계획 수립
  */
+import { normEdits } from './analysis-edits';
 import {
   SCHEMA_VERSION,
   USAGE_SECTIONS,
@@ -72,6 +73,7 @@ function normAnalysis(x: unknown): Analysis | undefined {
     scope: nonEmpty(x.scope),
     evidence: Array.isArray(x.evidence) ? x.evidence.filter(isObj).filter((e) => typeof e.quote === 'string').slice(0, 12).map((e) => ({ section: str(e.section) ?? '', quote: String(e.quote), ...(nonEmpty(e.point) ? { point: nonEmpty(e.point) } : {}), ...(nonEmpty(e.pages) ? { pages: nonEmpty(e.pages) } : {}), verified: e.verified === true, ...(e.verified !== true && e.match === 'similar' ? { match: 'similar' as const } : {}) })) : undefined,
     sources: isObj(x.sources) && typeof x.sources.hash === 'string' ? { hash: x.sources.hash, sectionIds: strArr(x.sources.sectionIds).slice(0, 200) } : undefined,
+    ...(normEdits(x.edits) ? { edits: normEdits(x.edits), ...(isoDate(x.editedAt) ? { editedAt: isoDate(x.editedAt) } : {}) } : {}),
     usage: isObj(x.usage) && typeof x.usage.inputTokens === 'number' && typeof x.usage.outputTokens === 'number' && typeof x.usage.costUsd === 'number' ? { inputTokens: x.usage.inputTokens, outputTokens: x.usage.outputTokens, costUsd: x.usage.costUsd } : undefined,
   };
 }

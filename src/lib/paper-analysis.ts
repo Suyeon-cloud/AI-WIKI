@@ -7,6 +7,7 @@
  */
 import type { Analysis, AnalysisBasis, Material, Project } from '../types';
 import { bibAuthors } from './citation';
+import { withEdits } from './analysis-edits';
 import { estimateTokens, manualSelection, queryTerms, sectionsBlock, selectSections, textHash, verifyEvidence, type FullTextDoc, type Selection } from './fulltext';
 import { usageCost, type CallPlan, type ModelPrice, type Usage } from './ai-cost';
 import { ANALYSIS_SYSTEM, PAPER_SCHEMA, briefText, materialBlock, type AnalysisBrief } from './prompts';
@@ -163,7 +164,7 @@ export function finishPaper(o: {
  * extra는 원문에서 고른 조각 (분석이 없을 때만 붙인다).
  */
 export function compactBlock(m: Material, i: number, extra?: Selection): string {
-  const a = m.analysis?.analyzedAt ? m.analysis : undefined;
+  const a = m.analysis?.analyzedAt ? withEdits(m.analysis) : undefined;
   const ev = a?.evidence?.filter((e) => e.verified).slice(0, 2) ?? [];
   const lines = [
     `<자료 id="${m.id}" 번호="${i + 1}">`,
