@@ -74,7 +74,13 @@ export const docHash = (sections: Section[]) => textHash(sections.map((s) => `${
 /** PDF에서 뽑은 쪽별 텍스트 → 저장할 원문 문서 */
 export function buildFullText(materialId: string, fileName: string, pages: string[], numPages: number, now = new Date(), opts: { expectHangul?: boolean } = {}): FullTextDoc {
   const sections = splitSections(pages);
-  return { materialId, hash: docHash(sections), fileName, numPages, extractedAt: now.toISOString(), sections, extractorVersion: EXTRACTOR_VERSION, quality: assessQuality(pages, !!opts.expectHangul) };
+  const quality = assessQuality(pages, !!opts.expectHangul);
+  // 쪽 수 상한으로 뒷부분을 못 읽었으면 남겨 둔다 (결론·한계가 빠진 이유를 분석 확인창에서 알 수 있도록)
+  if (pages.length < numPages) {
+    quality.reasons.push(`PDF ${numPages}쪽 중 앞 ${pages.length}쪽만 추출됨 — ${pages.length + 1}쪽 이후(결론·한계 등)는 분석에 포함되지 않음`);
+    quality.level = 'low';
+  }
+  return { materialId, hash: docHash(sections), fileName, numPages, extractedAt: now.toISOString(), sections, extractorVersion: EXTRACTOR_VERSION, quality };
 }
 
 /** 자료 JSON에 남기는 원문 요약 정보 (원문 자체는 넣지 않는다) */

@@ -1383,6 +1383,8 @@ async function fulltextTests() {
   eq(roleOf({ id: 'x', title: '5.1.1. 개별 모달리티 시스템의 한계와 통합의 필요성', kind: 'body', pageFrom: 1, pageTo: 1, text: '' }), 'other', '본문 절 제목의 "한계"는 연구의 한계로 보지 않음');
   const rs = selectSections(real.sections, [], 24000);
   ok(['method', 'results', 'conclusion', 'limits', 'abstract'].every((r) => rs.sections.some((x) => roleOf(x) === r)) && !rs.sections.some((x) => x.kind === 'front' || x.kind === 'references') && rs.warnings.length === 0, '연구방법·결과·결론·한계·초록 포함, 표지·목차·참고문헌 제외, 경고 없음');
+  const cutDoc = buildFullText('cut', 'c.pdf', ['Ⅰ. 서론\n' + body('서론')], 463);
+  ok(cutDoc.quality?.level === 'low' && cutDoc.quality.reasons.some((r) => r.includes('PDF 463쪽 중 앞 1쪽만 추출됨') && r.includes('결론')), '쪽 수 상한으로 뒷부분을 못 읽으면 품질 경고로 남김 (결론 누락 이유 표시)');
 
 }
 

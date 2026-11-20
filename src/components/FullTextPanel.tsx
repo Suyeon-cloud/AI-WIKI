@@ -9,7 +9,8 @@ import { formatDate } from '../lib/utils';
 import { Card } from './ui';
 
 const MAX_PDF_BYTES = 60 * 1024 * 1024;
-const MAX_PAGES = 400;
+// 학위논문은 결론·한계가 뒤쪽(400쪽 이후)에 있을 수 있으므로 넉넉히 (파일 크기 상한 60MB가 함께 제한)
+const MAX_PAGES = 1000;
 
 /** 원문이 오래된 추출 방식이거나 품질 점검에서 문제가 있으면 그 이유 */
 export function fullTextWarnings(m: Material): string[] {
