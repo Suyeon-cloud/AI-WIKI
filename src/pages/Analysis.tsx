@@ -17,7 +17,7 @@ import {
   type PaperRequest,
 } from '../lib/paper-analysis';
 import { CostConfirm, ModelSelect, useCostSettings } from '../components/CostConfirm';
-import { FullTextPanel } from '../components/FullTextPanel';
+import { FullTextPanel, fullTextWarnings } from '../components/FullTextPanel';
 import { uid } from '../lib/utils';
 import { bibAuthors } from '../lib/citation';
 import {
@@ -199,6 +199,35 @@ function AnalysisMeta({ a }: { a: AnalysisT }) {
   );
 }
 
+/** 분석에 실제로 보낸 원문 절을 원문 보관소에서 불러와 보여 준다 (원문이 다시 추출됐으면 알림) */
+function UsedSource({ a, m }: { a: AnalysisT; m: Material }) {
+  const [state, setState] = useState<{ note: string; sections: { title: string; pages: string; text: string }[] } | null>(null);
+  if (a.basis !== 'fulltext' || !a.sources) return null;
+  async function load() {
+    const userId = authUser()?.id;
+    const doc = userId && m.fulltext ? await loadFullText(userId, m.id) : undefined;
+    if (!doc) return setState({ note: '원문을 불러오지 못했습니다 (이 기기와 클라우드에 없음).', sections: [] });
+    const ids = new Set(a.sources!.sectionIds);
+    const changed = doc.hash !== a.sources!.hash;
+    setState({
+      note: changed ? '분석 이후 원문이 다시 추출되어, 아래 내용은 분석 당시 보낸 원문과 다를 수 있습니다.' : `분석에 보낸 원문 ${ids.size}개 절 (PDF 전체가 아닌 선별 부분)`,
+      sections: changed ? [] : doc.sections.filter((s) => ids.has(s.id)).map((s) => ({ title: s.title, pages: `${s.pageFrom}${s.pageTo !== s.pageFrom ? `-${s.pageTo}` : ''}`, text: s.text })),
+    });
+  }
+  return (
+    <details className="used-source small" onToggle={(e) => (e.currentTarget as HTMLDetailsElement).open && !state && void load()}>
+      <summary>분석에 사용한 원문 보기</summary>
+      {state && <p className="muted">{state.note}</p>}
+      {state?.sections.map((s) => (
+        <div key={s.title + s.pages}>
+          <b>{s.title}</b> <span className="muted">p.{s.pages} · {s.text.length.toLocaleString()}자</span>
+          <pre>{s.text}</pre>
+        </div>
+      ))}
+    </details>
+  );
+}
+
 function EvidenceList({ a }: { a: AnalysisT }) {
   if (!a.evidence?.length) return null;
   return (
@@ -218,10 +247,10 @@ function EvidenceList({ a }: { a: AnalysisT }) {
   );
 }
 
-function PaperView({ a }: { a: AnalysisT }) {
+function PaperView({ a, m }: { a: AnalysisT; m: Material }) {
   return (
     <div className="result-grid">
-      <div className="result-item span-2"><AnalysisMeta a={a} /></div>
+      <div className="result-item span-2"><AnalysisMeta a={a} /><UsedSource a={a} m={m} /></div>
       <div className="result-item span-2"><h4>요약</h4><p>{a.summary}</p></div>
       <div className="result-item"><h4>핵심 주제</h4><p>{a.topic}</p></div>
       <div className="result-item"><h4>관련도</h4><p><Relevance value={a.relevance} /> {a.rationale}</p></div>
@@ -246,6 +275,7 @@ interface Pending {
   title: string;
   estimate: Estimate;
   notes: string[];
+  warnings?: string[];
   run: () => Promise<void>;
 }
 
@@ -330,6 +360,7 @@ export function Analysis() {
         basis === 'fulltext' && !needDocs.length ? '분석이 없는 자료 중 원문이 등록된 자료가 없어, 원문 보충 없이 진행합니다.' : '',
         missing > 0 ? `원문을 불러오지 못한 자료 ${missing}건은 초록·서지로만 분석합니다 (원문 다시 등록 필요).` : '',
       ].filter(Boolean),
+      warnings: basis === 'fulltext' ? needDocs.filter((m) => docs.has(m.id)).flatMap((m) => fullTextWarnings(m).map((w) => `${m.title}: ${w}`)).slice(0, 6) : [],
       run: () => execAll(b, req.content, req.scope),
     });
   }
@@ -391,6 +422,7 @@ export function Analysis() {
         `근거: ${basis === 'fulltext' ? '원문 기반' : '초록 기반'} — ${req.scope}`,
         m.analysis?.analyzedAt ? '이 논문의 기존 AI 분석은 새 결과로 바뀝니다. 나의 관점·연구 기록은 그대로입니다.' : '',
       ].filter(Boolean),
+      warnings: basis === 'fulltext' ? fullTextWarnings(m) : [],
       run: () => execOne(m, req, doc, key),
     });
   }
@@ -407,7 +439,7 @@ export function Analysis() {
         onProgress: run.setChars,
         signal,
       });
-      const a = finishPaper({ data, basis: doc ? 'fulltext' : 'abstract', doc, scope: req.scope, model: used || model, usage, prices: cost.prices, cacheKey: key });
+      const a = finishPaper({ data, basis: doc ? 'fulltext' : 'abstract', doc, scope: req.scope, model: used || model, usage, prices: cost.prices, cacheKey: key, sectionIds: req.selection?.sections.map((s) => s.id) });
       dispatch({ type: 'update', id: m.id, patch: { analysis: a } });
       const evidence = a.evidence?.length
         ? `\n\n## 원문 근거\n${a.evidence.map((e) => `- [${e.verified ? '원문 확인' : '원문에서 못 찾음'}] ${e.section}${e.pages ? ` p.${e.pages}` : ''}: "${e.quote}"${e.point ? ` → ${e.point}` : ''}`).join('\n')}`
@@ -587,7 +619,7 @@ export function Analysis() {
                 </Card>
                 {selected.analysis?.analyzedAt ? (
                   <Card title="AI 논문 분석" extra={<StatusBadge s="ai">{modelLabel(selected.analysis.model)}</StatusBadge>} className="result ai-outline">
-                    <PaperView a={selected.analysis} />
+                    <PaperView a={selected.analysis} m={selected} />
                   </Card>
                 ) : selected.analysis ? (
                   <Card><Empty>이전 버전의 Demo 분석만 있습니다. "이 논문 AI 분석"으로 실제 분석을 실행하세요.</Empty></Card>
@@ -607,6 +639,7 @@ export function Analysis() {
           estimate={pending.estimate}
           settings={cost}
           notes={pending.notes}
+          warnings={pending.warnings}
           onClose={() => setPending(null)}
           onConfirm={() => {
             const go = pending.run;

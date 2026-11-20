@@ -20,6 +20,36 @@ export interface FullTextDoc {
   numPages: number;
   extractedAt: string;
   sections: Section[];
+  /** 추출 방식 버전 (2: 한글 CMap·띄어쓰기 보정) */
+  extractorVersion?: number;
+  quality?: ExtractQuality;
+}
+
+/** 2: 한글 CID 글꼴 CMap 적용·조각 사이 띄어쓰기. 이보다 낮으면 다시 추출을 권한다 */
+export const EXTRACTOR_VERSION = 2;
+export interface ExtractQuality {
+  level: 'good' | 'low';
+  reasons: string[];
+  charsPerPage: number;
+  hangulRatio: number;
+}
+
+/**
+ * 추출 품질 점검 (로컬): 쪽당 글자 수, 한글 비율(한국어 논문일 때), 깨진 글자(대체 문자·사용자 정의 영역·낱자모) 비율.
+ */
+export function assessQuality(pages: string[], expectHangul: boolean): ExtractQuality {
+  const text = pages.join('\n').replace(/\s+/g, '');
+  const charsPerPage = Math.round(text.length / Math.max(1, pages.length));
+  const hangul = (text.match(/[가-힣]/g) ?? []).length;
+  const letters = hangul + (text.match(/[A-Za-z㐀-鿿]/g) ?? []).length;
+  const hangulRatio = letters ? hangul / letters : 0;
+  // 대체 문자(U+FFFD)·사용자 정의 영역·낱자모(호환 자모)는 글꼴 매핑 실패의 흔한 흔적
+  const broken = (text.match(/[�-ㄱ-ㆎ]/g) ?? []).length;
+  const reasons: string[] = [];
+  if (charsPerPage < 300) reasons.push(`쪽당 글자 수가 적음 (평균 ${charsPerPage}자)`);
+  if (expectHangul && hangulRatio < 0.3) reasons.push(`한글 비율이 낮음 (${Math.round(hangulRatio * 100)}%) — 한글이 빠졌거나 깨졌을 수 있음`);
+  if (text.length && broken / text.length > 0.01) reasons.push(`깨진 글자 비율이 높음 (${Math.round((broken / text.length) * 1000) / 10}%)`);
+  return { level: reasons.length ? 'low' : 'good', reasons, charsPerPage, hangulRatio: Math.round(hangulRatio * 100) / 100 };
 }
 
 /* ───────── 해시 (동기, 브라우저·Node 공통) ───────── */
@@ -42,9 +72,9 @@ export function textHash(s: string, seed = 0): string {
 export const docHash = (sections: Section[]) => textHash(sections.map((s) => `${s.title}\n${s.text}`).join('\n\f'));
 
 /** PDF에서 뽑은 쪽별 텍스트 → 저장할 원문 문서 */
-export function buildFullText(materialId: string, fileName: string, pages: string[], numPages: number, now = new Date()): FullTextDoc {
+export function buildFullText(materialId: string, fileName: string, pages: string[], numPages: number, now = new Date(), opts: { expectHangul?: boolean } = {}): FullTextDoc {
   const sections = splitSections(pages);
-  return { materialId, hash: docHash(sections), fileName, numPages, extractedAt: now.toISOString(), sections };
+  return { materialId, hash: docHash(sections), fileName, numPages, extractedAt: now.toISOString(), sections, extractorVersion: EXTRACTOR_VERSION, quality: assessQuality(pages, !!opts.expectHangul) };
 }
 
 /** 자료 JSON에 남기는 원문 요약 정보 (원문 자체는 넣지 않는다) */
@@ -56,6 +86,8 @@ export interface FullTextMeta {
   sections: number;
   savedAt: string;
   cloud: boolean;
+  extractorVersion?: number;
+  quality?: { level: 'good' | 'low'; reasons: string[] };
 }
 export const fullTextMeta = (d: FullTextDoc, cloud: boolean): FullTextMeta => ({
   hash: d.hash,
@@ -65,6 +97,8 @@ export const fullTextMeta = (d: FullTextDoc, cloud: boolean): FullTextMeta => ({
   sections: d.sections.length,
   savedAt: d.extractedAt,
   cloud,
+  ...(d.extractorVersion ? { extractorVersion: d.extractorVersion } : {}),
+  ...(d.quality ? { quality: { level: d.quality.level, reasons: d.quality.reasons } } : {}),
 });
 
 /** 원문 문서 형식 검사 (깨졌거나 다른 자료의 문서면 undefined) */
@@ -85,7 +119,7 @@ const kindOf = (title: string): SectionKind => {
   const t = title.replace(/\s+/g, '');
   if (/^(국문)?초록$|^요약$|^abstract$/i.test(t)) return 'abstract';
   if (/참고문헌|references|bibliography/i.test(t)) return 'references';
-  if (/서론|들어가며|introduction|머리말/i.test(t)) return 'intro';
+  if (/서론|들어가며|introduction|머리말|^\d\.?연구(의)?배경|문제제기/i.test(t)) return 'intro';
   if (/결론|맺음말|나가며|conclusion|제언/i.test(t)) return 'conclusion';
   return 'body';
 };
@@ -228,7 +262,17 @@ export const sectionsBlock = (ss: Section[]) =>
 
 /* ───────── 근거 인용 확인 ───────── */
 
-const squash = (s: string) => s.normalize('NFC').replace(/[\s ]+/g, '').replace(/[“”"'‘’]/g, '').toLowerCase();
+/** 인용 비교용 정규화: 호환 문자(NFKC)·공백·줄바꿈·줄 끝 하이픈·따옴표·가운뎃점/대시 변형 차이만 없앤다 (글자 자체는 바꾸지 않음) */
+export const squash = (s: string) =>
+  s
+    .normalize('NFKC')
+    .replace(/[­​-‍﻿]/g, '') // 소프트 하이픈·폭 없는 문자
+    .replace(/-\s*\n\s*/g, '') // 줄 끝에서 하이픈으로 나뉜 단어
+    .replace(/[\s ]+/g, '')
+    .replace(/[“”"'‘’`´]/g, '')
+    .replace(/[·•ㆍ･]/g, '·')
+    .replace(/[‐-―−]/g, '-')
+    .toLowerCase();
 
 export interface Evidence {
   section: string;
@@ -241,15 +285,32 @@ export interface Evidence {
 
 /** AI가 낸 인용을 원문에서 찾아 확인하고, 찾은 절의 쪽 범위를 붙인다 */
 export function verifyEvidence(items: { section: string; quote: string; point?: string }[], sections: Section[]): Evidence[] {
+  // 절마다 정규화한 텍스트를 이어 붙이고 시작 위치를 기억한다 (절 경계를 넘는 인용도 찾음)
+  const norm = sections.map((s) => squash(s.text));
+  const starts: number[] = [];
+  let pos = 0;
+  for (const n of norm) {
+    starts.push(pos);
+    pos += n.length;
+  }
+  const all = norm.join('');
+  const sectionAt = (i: number) => {
+    let k = 0;
+    while (k + 1 < starts.length && starts[k + 1] <= i) k++;
+    return sections[k];
+  };
   return items.slice(0, 12).map((e) => {
     const q = squash(e.quote ?? '');
-    const hit = q.length >= 8 ? sections.find((s) => squash(s.text).includes(q)) : undefined;
+    const at = q.length >= 8 ? all.indexOf(q) : -1;
+    const first = at >= 0 ? sectionAt(at) : undefined;
+    const last = at >= 0 ? sectionAt(at + q.length - 1) : undefined;
+    const pages = first && last ? `${first.pageFrom}${Math.max(first.pageTo, last.pageTo) !== first.pageFrom ? `-${Math.max(first.pageTo, last.pageTo)}` : ''}` : undefined;
     return {
-      section: hit?.title ?? e.section ?? '',
+      section: first?.title ?? e.section ?? '',
       quote: (e.quote ?? '').trim().slice(0, 300),
       ...(e.point ? { point: e.point.trim().slice(0, 300) } : {}),
-      ...(hit ? { pages: `${hit.pageFrom}${hit.pageTo !== hit.pageFrom ? `-${hit.pageTo}` : ''}` } : {}),
-      verified: !!hit,
+      ...(pages ? { pages } : {}),
+      verified: at >= 0,
     };
   });
 }

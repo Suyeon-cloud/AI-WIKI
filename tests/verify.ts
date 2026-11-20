@@ -24,7 +24,8 @@ import { checkFootnotes, segmentLine, splitNotes } from '../src/lib/footnotes';
 import { clipAbstract, clipYear, defaultEnrichFields, enrichPatch, planEnrichment, reviewReasons, summarizeSelection, type ClipFile, type EnrichField } from '../src/lib/clip-enrich';
 import { matchBibQuery, matchRefType } from '../src/lib/bib-search';
 import { TranscriptError, buildTranscriptNote, dedupeCues, formatTime, groupSegments, parseVtt, pickTrack, ytdlpError, type YtInfo } from '../src/lib/yt-transcript';
-import { buildFullText, docHash, estimateTokens, fullTextMeta, queryTerms, sectionsBlock, selectSections, validDoc, verifyEvidence } from '../src/lib/fulltext';
+import { joinItems } from '../src/lib/pdf-text';
+import { assessQuality, buildFullText, docHash, estimateTokens, fullTextMeta, queryTerms, sectionsBlock, selectSections, validDoc, verifyEvidence } from '../src/lib/fulltext';
 import { costUsd, estimate, normCost, usageCost } from '../src/lib/ai-cost';
 import { thesisContext } from '../src/lib/prompts';
 import { PAPER_MAX_TOKENS, cacheHit, collectionRequest, compactBlock, finishPaper, paperCacheKey, paperRequest, writingEvidence } from '../src/lib/paper-analysis';
@@ -1285,6 +1286,35 @@ async function fulltextTests() {
   ok(ctx.includes('[AI 분석 · 원문 기반') && ctx.includes('초록: 두 번째 초록'), '집필 맥락: 저장된 분석·초록 압축 블록 사용 (map 인자 오류 없음)');
   const w = writingEvidence(queryTerms('이론적 배경', ['이중부호화']), [analyzed], new Map([['pa', doc]]), 3000);
   ok(w.used <= 3000 && w.materials === 1 && !w.block.includes('국문초록') && (w.block.match(/<원문 절=/g) ?? []).length <= 2, '집필 근거: 예산 안에서 자료당 최대 2조각, 초록·원문 전체는 보내지 않음');
+
+  section('17-4. 한글 추출 품질 · 인용 확인 보정 · 다시 추출');
+  const it = (str: string, x: number, y: number, w: number, extra: Partial<{ hasEOL: boolean }> = {}) => ({ str, transform: [10, 0, 0, 10, x, y], width: w, ...extra });
+  eq(joinItems([it('생성형', 0, 100, 30), it('AI', 34, 100, 10), it('를', 44, 100, 10), it('활용', 0, 80, 20)]).text, '생성형 AI를\n활용', '조각 사이 간격이 있으면 띄어쓰기, 붙어 있으면 그대로, 줄이 바뀌면 줄바꿈');
+  const korean = ['생성형 인공지능을 활용한 모션그래픽 제작 과정에서 발생하는 시각적 오류를 분석하였다. '.repeat(8)];
+  eq(assessQuality(korean, true).level, 'good', '정상 한국어 원문 → 품질 양호');
+  const lost = assessQuality(['2. AI 3. AI 3.5 4 . , ' + 'AI I2V 70% 1/10 '.repeat(20)], true);
+  ok(lost.level === 'low' && lost.reasons.some((r) => r.includes('한글 비율이 낮음')) && lost.reasons.some((r) => r.includes('쪽당 글자 수')), '한글이 빠진 추출(제목은 한국어) → 품질 낮음·이유 표시');
+  ok(assessQuality(['��� 가나다라 '.repeat(60)], true).reasons.some((r) => r.includes('깨진 글자')), '대체 문자가 많으면 깨진 글자 경고');
+  eq(assessQuality(['Motion graphics study. '.repeat(30)], false).level, 'good', '영문 논문은 한글 비율로 경고하지 않음');
+  const kdoc = buildFullText('kq', 'k.pdf', ['Ⅰ. 서론\n생성형 AI는 영상 제작 공정의 효율성을\n높이며 시간과 비용을 절감한다.', 'Ⅱ. 결론\n하이브리드 방식은 작업 시간을 약 70% 단축하면서도 형태 왜곡을 1/10로 줄였다. 실무 적용성이 확인되었다.'], 2, new Date(), { expectHangul: true });
+  eq([kdoc.extractorVersion, fullTextMeta(kdoc, false).extractorVersion, fullTextMeta(kdoc, false).quality?.level], [2, 2, 'low'], '추출 방식 버전·품질을 원문 정보에 기록 (짧은 원문은 품질 낮음)');
+  const v = verifyEvidence([
+    { section: 'Ⅰ', quote: '영상 제작 공정의 효율성을 높이며', point: '' },
+    { section: 'Ⅱ', quote: '작업 시간을 약 70％ 단축하면서도', point: '' },
+    { section: 'x', quote: '시간과 비용을 절감한다. Ⅱ. 결론 하이브리드', point: '' },
+    { section: 'x', quote: '시간과 비용을 크게 절감한다', point: '' },
+    { section: 'x', quote: '70% 단축', point: '' },
+  ], kdoc.sections);
+  eq(v.map((e) => e.verified), [true, true, false, false, false], '줄바꿈·전각 문자 차이는 허용, 단어를 바꾸거나 너무 짧은 인용은 미확인 (절 제목이 끼면 미확인)');
+  const cross = verifyEvidence([{ section: '', quote: '시간과 비용을 절감한다.하이브리드 방식은 작업 시간을', point: '' }], kdoc.sections);
+  eq([cross[0].verified, cross[0].pages], [true, '1-2'], '절 경계를 넘는 인용도 원문에 연속으로 있으면 확인, 쪽 범위 표시');
+  const hy = buildFullText('hy', 'h.pdf', ['Ⅰ. 서론\nThe hybrid work-\nflow reduces distortion considerably.'], 1);
+  eq(verifyEvidence([{ section: '', quote: 'hybrid workflow reduces distortion', point: '' }], hy.sections)[0].verified, true, '줄 끝 하이픈으로 나뉜 단어도 확인');
+  const fa = finishPaper({ data: { summary: 's', topic: '', keywords: [], relevance: 3, rationale: '', connection: '', insights: [], method: '', findings: '', limitations: '', usageIdea: '' }, basis: 'fulltext', doc: kdoc, scope: 'x', model: 'claude-haiku-5-5', cacheKey: null, sectionIds: ['s1', 's2'] });
+  eq(fa.sources, { hash: kdoc.hash, sectionIds: ['s1', 's2'] }, '분석에 보낸 원문 절을 원문 해시와 함께 기록');
+  const nm = normalizeMaterial(JSON.parse(JSON.stringify({ id: 'kq', title: '가상', analysis: fa, fulltext: fullTextMeta(kdoc, false) })), 'kq')!;
+  eq([nm.analysis?.sources?.sectionIds.length, nm.fulltext?.extractorVersion, nm.fulltext?.quality?.level], [2, 2, 'low'], '저장 후에도 원문 절·추출 버전·품질 유지');
+  eq(normalizeMaterial({ id: 'old', title: 'x', fulltext: { hash: 'h1', fileName: 'a.pdf', pages: 1, chars: 1, sections: 1, savedAt: '2026-11-20T00:00:00Z', cloud: false } }, 'old')?.fulltext?.extractorVersion, undefined, '이전에 등록한 원문은 추출 버전 없음 → 다시 추출 권장 대상');
 }
 
 (async () => {

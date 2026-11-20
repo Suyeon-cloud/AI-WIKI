@@ -44,6 +44,7 @@ export function CostConfirm({
   estimate: e,
   settings,
   notes,
+  warnings = [],
   onConfirm,
   onClose,
 }: {
@@ -51,10 +52,12 @@ export function CostConfirm({
   estimate: Estimate;
   settings: CostSettings;
   notes: string[];
+  /** 실행 전에 꼭 확인할 문제 (원문 추출 품질 등). 있으면 확인 체크 후 실행 */
+  warnings?: string[];
   onConfirm: () => void;
   onClose: () => void;
 }) {
-  const over = e.overTokens || e.overCost;
+  const over = e.overTokens || e.overCost || warnings.length > 0;
   const [agree, setAgree] = useState(false);
   return (
     <Modal
@@ -78,6 +81,11 @@ export function CostConfirm({
           <tr><th>예상 비용</th><td>약 {usd(e.expectedUsd)} · 최대 {usd(e.maxUsd)} {e.overCost && <span className="warn-tag">한도 {usd(settings.maxCostUsd)} 초과</span>}</td></tr>
         </tbody>
       </table>
+      {warnings.length > 0 && (
+        <ul className="warn-list small">
+          {warnings.map((w) => <li key={w}>{w}</li>)}
+        </ul>
+      )}
       <ul className="small cost-notes">
         {notes.map((n) => <li key={n}>{n}</li>)}
         <li className="muted">토큰은 글자 수로 어림한 값이고, 비용은 연구 설정의 단가로 계산합니다. 실제 사용량은 분석 결과에 표시됩니다.</li>
@@ -85,7 +93,7 @@ export function CostConfirm({
       {over && (
         <label className="radio">
           <input type="checkbox" checked={agree} onChange={(x) => setAgree(x.target.checked)} />
-          한도를 넘는 것을 확인했고 이번 분석은 그대로 진행합니다
+          {warnings.length ? '위 경고를 확인했고 이번 분석은 그대로 진행합니다' : '한도를 넘는 것을 확인했고 이번 분석은 그대로 진행합니다'}
         </label>
       )}
     </Modal>

@@ -71,6 +71,7 @@ function normAnalysis(x: unknown): Analysis | undefined {
     cacheKey: nonEmpty(x.cacheKey),
     scope: nonEmpty(x.scope),
     evidence: Array.isArray(x.evidence) ? x.evidence.filter(isObj).filter((e) => typeof e.quote === 'string').slice(0, 12).map((e) => ({ section: str(e.section) ?? '', quote: String(e.quote), ...(nonEmpty(e.point) ? { point: nonEmpty(e.point) } : {}), ...(nonEmpty(e.pages) ? { pages: nonEmpty(e.pages) } : {}), verified: e.verified === true })) : undefined,
+    sources: isObj(x.sources) && typeof x.sources.hash === 'string' ? { hash: x.sources.hash, sectionIds: strArr(x.sources.sectionIds).slice(0, 200) } : undefined,
     usage: isObj(x.usage) && typeof x.usage.inputTokens === 'number' && typeof x.usage.outputTokens === 'number' && typeof x.usage.costUsd === 'number' ? { inputTokens: x.usage.inputTokens, outputTokens: x.usage.outputTokens, costUsd: x.usage.costUsd } : undefined,
   };
 }
@@ -78,7 +79,8 @@ function normAnalysis(x: unknown): Analysis | undefined {
 function normFullText(x: unknown): FullTextInfo | undefined {
   if (!isObj(x) || typeof x.hash !== 'string' || !x.hash) return undefined;
   const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
-  return { hash: x.hash, fileName: str(x.fileName) ?? '', pages: n(x.pages), chars: n(x.chars), sections: n(x.sections), savedAt: isoDate(x.savedAt) ?? '', cloud: x.cloud === true };
+  const q = isObj(x.quality) && (x.quality.level === 'good' || x.quality.level === 'low') ? { level: x.quality.level as 'good' | 'low', reasons: strArr(x.quality.reasons) } : undefined;
+  return { hash: x.hash, fileName: str(x.fileName) ?? '', pages: n(x.pages), chars: n(x.chars), sections: n(x.sections), savedAt: isoDate(x.savedAt) ?? '', cloud: x.cloud === true, ...(n(x.extractorVersion) ? { extractorVersion: n(x.extractorVersion) } : {}), ...(q ? { quality: q } : {}) };
 }
 
 function normTranscript(x: unknown): TranscriptSummary | undefined {

@@ -37,6 +37,7 @@ export interface Analysis {
   scope?: string; // 실제로 읽은 범위 (원문의 어느 장·절인지)
   evidence?: AnalysisEvidence[]; // 원문 근거 인용 (로컬에서 원문 일치 확인)
   usage?: { inputTokens: number; outputTokens: number; costUsd: number };
+  sources?: { hash: string; sectionIds: string[] }; // 분석에 실제로 보낸 원문 절 (원문 해시 기준)
 }
 
 export type AnalysisBasis = 'abstract' | 'fulltext';
@@ -57,6 +58,8 @@ export interface FullTextInfo {
   sections: number;
   savedAt: string;
   cloud: boolean;
+  extractorVersion?: number; // 2부터 한글 CMap 적용 (낮거나 없으면 다시 추출 권장)
+  quality?: { level: 'good' | 'low'; reasons: string[] }; // 추출 품질 점검 결과
 }
 
 export interface TranscriptSummary {

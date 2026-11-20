@@ -12,7 +12,23 @@ export interface PdfText {
   largestLines: string[];
 }
 
-type TextItem = { str: string; hasEOL?: boolean; transform: number[]; height?: number };
+import { joinItems, type TextItem } from './pdf-text';
+
+/**
+ * 한글·한자 CID 글꼴의 글자 코드를 유니코드로 바꾸는 CMap (pdfjs-dist/cmaps).
+ * 넘기지 않으면 한글이 빠지거나 깨진다. 앱에 포함해 두고 PDF가 요구하는 것만 불러온다.
+ */
+const CMAPS = import.meta.glob('/node_modules/pdfjs-dist/cmaps/*.bcmap', { query: '?url', import: 'default' }) as Record<string, () => Promise<string>>;
+class BundledCMapReaderFactory {
+  constructor(_: { baseUrl?: string | null; isCompressed?: boolean }) {}
+  async fetch({ name }: { name: string }) {
+    const load = CMAPS[`/node_modules/pdfjs-dist/cmaps/${name}.bcmap`];
+    if (!load) throw new Error(`CMap을 찾을 수 없습니다: ${name}`);
+    const res = await fetch(await load());
+    if (!res.ok) throw new Error(`CMap을 불러오지 못했습니다: ${name}`);
+    return { cMapData: new Uint8Array(await res.arrayBuffer()), isCompressed: true };
+  }
+}
 
 let lib: Promise<typeof import('pdfjs-dist')> | null = null;
 async function pdfjs() {
@@ -24,36 +40,15 @@ async function pdfjs() {
   return lib;
 }
 
-/** 페이지 텍스트를 줄 단위로 복원 (같은 줄의 조각은 이어 붙이고, y좌표가 바뀌면 줄바꿈) */
-function joinItems(items: TextItem[]): { text: string; lines: { text: string; size: number }[] } {
-  const lines: { text: string; size: number }[] = [];
-  let cur = '';
-  let size = 0;
-  let lastY: number | null = null;
-  const flush = () => {
-    if (cur.trim()) lines.push({ text: cur.replace(/\s+/g, ' ').trim(), size });
-    cur = '';
-    size = 0;
-  };
-  for (const it of items) {
-    const y = it.transform[5];
-    const h = Math.abs(it.transform[3]) || it.height || 0;
-    if (lastY !== null && Math.abs(y - lastY) > Math.max(2, h * 0.5)) flush();
-    cur += it.str;
-    size = Math.max(size, h);
-    lastY = y;
-    if (it.hasEOL) {
-      flush();
-      lastY = null;
-    }
-  }
-  flush();
-  return { text: lines.map((l) => l.text).join('\n'), lines };
-}
-
 export async function readPdf(file: Blob, maxPages = 40): Promise<PdfText> {
   const m = await pdfjs();
-  const doc = await m.getDocument({ data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false }).promise;
+  const doc = await m.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+    isEvalSupported: false,
+    cMapPacked: true,
+    useWorkerFetch: false,
+    CMapReaderFactory: BundledCMapReaderFactory,
+  } as Parameters<typeof m.getDocument>[0]).promise;
   try {
     const pages: string[] = [];
     let largestLines: string[] = [];

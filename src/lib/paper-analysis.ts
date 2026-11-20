@@ -121,6 +121,8 @@ export function finishPaper(o: {
   usage?: Usage;
   prices?: Record<string, ModelPrice>;
   cacheKey: string | null;
+  /** 실제로 보낸 원문 절 id (원문 기반) */
+  sectionIds?: string[];
   now?: Date;
 }): Analysis {
   const { data } = o;
@@ -144,6 +146,7 @@ export function finishPaper(o: {
     cacheKey: o.cacheKey ?? undefined,
     scope: o.scope,
     evidence: o.basis === 'fulltext' && o.doc && data.evidence ? verifyEvidence(data.evidence, o.doc.sections) : undefined,
+    sources: o.basis === 'fulltext' && o.doc && o.sectionIds ? { hash: o.doc.hash, sectionIds: o.sectionIds } : undefined,
     usage,
   };
 }
