@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useStore, useProject } from '../store';
-import { AI_MODEL_LABEL, AiError, EFFORTS, aiState, generate, refreshAi, setSessionApiKey, setEffort, type Effort } from '../lib/ai';
+import { AiError, EFFORTS, aiModelLabel, aiState, aiWritingModel, generate, refreshAi, setSessionApiKey, setEffort, type Effort } from '../lib/ai';
+import { AI_MODELS, DEFAULT_PRICES, normCost, usd } from '../lib/ai-cost';
+import { useCostSettings } from '../components/CostConfirm';
 import { Card, PageHeader } from '../components/ui';
 import { ImportFlow, downloadBackup } from '../components/ImportExport';
 import { DriveSync } from '../components/DriveSync';
@@ -29,7 +31,7 @@ function AiSettings() {
     finally { setTesting(false); }
   }
   return <Card title="AI 설정 (Claude API)" extra={<span className={s.configured ? 'ok-tag' : 'warn-tag'}>{s.hasKey ? '이 탭에 키 입력됨' : '본인 키 필요'}</span>}>
-    <p className="muted small">{AI_MODEL_LABEL}를 사용합니다. 각자 본인의 API 키를 입력하며 해당 API 계정에 요금이 청구됩니다. 키는 서버를 거쳐 Claude에 전달됩니다.</p>
+    <p className="muted small">기본 모델: 분석 {aiModelLabel()} · 집필 {aiModelLabel(aiWritingModel())} (아래 'AI 비용 설정'에서 변경). 각자 본인의 API 키를 입력하며 해당 API 계정에 요금이 청구됩니다. 키는 서버를 거쳐 Claude에 전달됩니다.</p>
     <p className="notice">{s.message}</p>
     <div className="io-row">
       <input type="password" aria-label="본인 Claude API 키" autoComplete="off" spellCheck={false} value={key} onChange={(e) => setKey(e.target.value)} placeholder="sk-ant-…" />
@@ -40,6 +42,53 @@ function AiSettings() {
     <div className="io-row"><span className="io-label">분석 깊이</span><div className="seg">{EFFORTS.map((e) => <button key={e.key} className={s.effort === e.key ? 'active' : ''} onClick={() => setEffort(e.key as Effort)}>{e.label}</button>)}</div></div>
     <button className="btn" onClick={test} disabled={testing || !s.hasKey}>{testing ? '확인 중…' : '연결 확인'}</button>
     <p className="muted small">연결 확인은 짧은 AI 요청을 보내며 API 사용 요금이 발생합니다.</p>
+  </Card>;
+}
+
+/** 기본 모델·분석 1회 한도·모델별 단가 (계정별, 이 브라우저에 저장) */
+function AiCostSettings() {
+  const { toast } = useStore();
+  const [cost, setCost] = useCostSettings();
+  const [draft, setDraft] = useState(cost);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(cost);
+  const price = (id: string, k: 'input' | 'output', v: string) =>
+    setDraft((d) => ({ ...d, prices: { ...d.prices, [id]: { ...d.prices[id], [k]: Number(v) } } }));
+  return <Card title="AI 비용 설정" extra={<span className="muted small">분석 {AI_MODELS.find((m) => m.id === cost.model)?.label} · 집필 {AI_MODELS.find((m) => m.id === cost.writingModel)?.label}</span>}>
+    <p className="muted small">기능별 기본 모델(분석·서지 보정·관련도 / 집필)과, 분석 1회에 허용할 입력 토큰·비용 한도입니다. 한도를 넘을 것으로 예상되면 실행 전에 한 번 더 확인합니다. 단가는 예상 비용 계산에만 쓰입니다.</p>
+    <div className="form-grid">
+      <label>AI 분석 기본 모델
+        <select value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })}>
+          {AI_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label} ({m.note})</option>)}
+        </select>
+      </label>
+      <label>AI 집필 기본 모델
+        <select value={draft.writingModel} onChange={(e) => setDraft({ ...draft, writingModel: e.target.value })}>
+          {AI_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label} ({m.note})</option>)}
+        </select>
+      </label>
+      <label>분석 1회 입력 토큰 한도
+        <input type="number" min={1000} step={1000} value={draft.maxInputTokens} onChange={(e) => setDraft({ ...draft, maxInputTokens: Number(e.target.value) })} />
+      </label>
+      <label>분석 1회 비용 한도 (USD)
+        <input type="number" min={0.001} step={0.01} value={draft.maxCostUsd} onChange={(e) => setDraft({ ...draft, maxCostUsd: Number(e.target.value) })} />
+      </label>
+    </div>
+    <table className="table compact cost-prices">
+      <thead><tr><th>모델</th><th>입력 $/100만 토큰</th><th>출력 $/100만 토큰</th></tr></thead>
+      <tbody>
+        {AI_MODELS.map((m) => (
+          <tr key={m.id}>
+            <td>{m.label}{DEFAULT_PRICES[m.id].tierAbove ? <small className="muted"> (입력 {DEFAULT_PRICES[m.id].tierAbove!.toLocaleString()} 토큰 초과 시 {usd(DEFAULT_PRICES[m.id].inputHigh!)} / {usd(DEFAULT_PRICES[m.id].outputHigh!)})</small> : null}</td>
+            <td><input type="number" min={0} step={0.01} value={draft.prices[m.id]?.input ?? 0} onChange={(e) => price(m.id, 'input', e.target.value)} /></td>
+            <td><input type="number" min={0} step={0.01} value={draft.prices[m.id]?.output ?? 0} onChange={(e) => price(m.id, 'output', e.target.value)} /></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    <div className="actions">
+      <button className="btn btn-primary" disabled={!dirty} onClick={() => { const n = normCost(draft); setCost(n); setDraft(n); toast('AI 비용 설정을 저장했습니다.'); }}>저장</button>
+      <button className="btn" onClick={() => setDraft(normCost({ model: draft.model, writingModel: draft.writingModel }))}>단가·한도 기본값</button>
+    </div>
   </Card>;
 }
 
@@ -87,6 +136,7 @@ export function Settings() {
             )}
           </Card>
           <AiSettings />
+          <AiCostSettings />
           <ObsidianSync />
           <ClipEnrich />
           <YoutubeEnrich />

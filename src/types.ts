@@ -31,6 +31,32 @@ export interface Analysis {
   usageIdea?: string; // 내 논문에서 쓸 위치·방법 제안
   model?: string;
   analyzedAt?: string;
+  // v4: 분석 근거·캐시·비용
+  basis?: AnalysisBasis; // 초록 기반 / 원문 기반
+  cacheKey?: string; // 근거·분석 기준·모델이 같으면 다시 호출하지 않는다
+  scope?: string; // 실제로 읽은 범위 (원문의 어느 장·절인지)
+  evidence?: AnalysisEvidence[]; // 원문 근거 인용 (로컬에서 원문 일치 확인)
+  usage?: { inputTokens: number; outputTokens: number; costUsd: number };
+}
+
+export type AnalysisBasis = 'abstract' | 'fulltext';
+export interface AnalysisEvidence {
+  section: string;
+  quote: string;
+  point?: string;
+  pages?: string;
+  verified: boolean;
+}
+
+/** 원문은 별도 보관소(IndexedDB·Storage)에 있고, 자료에는 이 요약만 남긴다 */
+export interface FullTextInfo {
+  hash: string;
+  fileName: string;
+  pages: number;
+  chars: number;
+  sections: number;
+  savedAt: string;
+  cloud: boolean;
 }
 
 export interface TranscriptSummary {
@@ -71,6 +97,7 @@ export interface Material {
   // ── v3 추가 필드 ──
   projectId?: string; // 소속 연구 프로젝트(라이브러리 폴더). 없으면 '미분류'
   abstract?: string; // 초록 (논문 PDF·KCI 검색 등에서 얻음)
+  fulltext?: FullTextInfo; // 등록한 PDF 원문의 요약 정보 (원문 텍스트는 자료 JSON에 넣지 않음)
   importedFrom?: 'KCI PDF' | 'KCI Open API' | 'PDF' | 'Google Drive' | 'Obsidian' | '직접 입력';
 }
 

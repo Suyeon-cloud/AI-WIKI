@@ -1,16 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { USAGE_SECTIONS, hasMyView, type Analysis as AnalysisT, type Material, type UsageSection } from '../types';
+import { USAGE_SECTIONS, hasMyView, type Analysis as AnalysisT, type AnalysisBasis, type Material, type UsageSection } from '../types';
 import { useStore, useProject } from '../store';
-import { AI_MODEL_LABEL, AiError, generate } from '../lib/ai';
+import { AiError, generate } from '../lib/ai';
+import { authUser } from '../lib/auth';
+import { estimate, modelLabel, usageCost, usd, type Estimate } from '../lib/ai-cost';
+import { estimateTokens, type FullTextDoc } from '../lib/fulltext';
+import { loadFullText } from '../lib/fulltext-store';
+import {
+  COLLECTION_MAX_TOKENS,
+  PAPER_FULLTEXT_CHARS,
+  cacheHit,
+  collectionRequest,
+  finishPaper,
+  paperCacheKey,
+  paperRequest,
+  type PaperRequest,
+} from '../lib/paper-analysis';
+import { CostConfirm, ModelSelect, useCostSettings } from '../components/CostConfirm';
+import { FullTextPanel } from '../components/FullTextPanel';
 import { uid } from '../lib/utils';
 import { bibAuthors } from '../lib/citation';
 import {
   ANALYSIS_SYSTEM,
   COLLECTION_SCHEMA,
-  PAPER_SCHEMA,
-  collectionPrompt,
   collectionToMarkdown,
-  paperPrompt,
   paperToMarkdown,
   type AnalysisBrief,
   type CollectionResult,
@@ -171,9 +184,44 @@ function CollectionView({ r, ms }: { r: CollectionResult; ms: Material[] }) {
   );
 }
 
+/** 분석 근거·범위·사용량 (AI 분석 결과와 근거를 구분해 보여 준다) */
+function AnalysisMeta({ a }: { a: AnalysisT }) {
+  return (
+    <div className="analysis-meta small">
+      <span className="chip">{a.basis === 'fulltext' ? '원문 기반' : a.basis === 'abstract' ? '초록 기반' : '근거 범위 기록 없음'}</span>
+      {a.scope && <span className="muted">범위: {a.scope}</span>}
+      {a.usage && (
+        <span className="muted">
+          · {modelLabel(a.model)} · 입력 {a.usage.inputTokens.toLocaleString()} / 출력 {a.usage.outputTokens.toLocaleString()} 토큰 · 추정 {usd(a.usage.costUsd)}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function EvidenceList({ a }: { a: AnalysisT }) {
+  if (!a.evidence?.length) return null;
+  return (
+    <div className="result-item span-2">
+      <h4>원문 근거</h4>
+      <ul className="evidence-list">
+        {a.evidence.map((e, i) => (
+          <li key={i}>
+            {e.verified ? <span className="ok-tag">원문 확인</span> : <span className="warn-tag">원문에서 못 찾음</span>}{' '}
+            <span className="muted small">{e.section}{e.pages ? ` · p.${e.pages}` : ''}</span>
+            <blockquote>{e.quote}</blockquote>
+            {e.point && <span className="small">→ {e.point}</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function PaperView({ a }: { a: AnalysisT }) {
   return (
     <div className="result-grid">
+      <div className="result-item span-2"><AnalysisMeta a={a} /></div>
       <div className="result-item span-2"><h4>요약</h4><p>{a.summary}</p></div>
       <div className="result-item"><h4>핵심 주제</h4><p>{a.topic}</p></div>
       <div className="result-item"><h4>관련도</h4><p><Relevance value={a.relevance} /> {a.rationale}</p></div>
@@ -184,11 +232,22 @@ function PaperView({ a }: { a: AnalysisT }) {
       {a.limitations && <div className="result-item"><h4>한계</h4><p>{a.limitations}</p></div>}
       {a.usageIdea && <div className="result-item"><h4>활용 제안</h4><p>{a.usageIdea}</p></div>}
       <div className="result-item span-2"><h4>핵심 키워드</h4><div className="chips">{a.keywords.map((k) => <span key={k} className="chip">{k}</span>)}</div></div>
+      <EvidenceList a={a} />
     </div>
   );
 }
 
 const hasBody = (m: Material) => (m.abstract ? '초록' : m.content ? '본문' : m.myView ? '메모만' : '제목만');
+/** 전체 분석에서 이 자료를 무엇으로 읽는지 */
+const collectionSource = (m: Material, basis: AnalysisBasis) =>
+  m.analysis?.analyzedAt ? '저장된 분석' : basis === 'fulltext' && m.fulltext ? '원문 일부' : hasBody(m);
+
+interface Pending {
+  title: string;
+  estimate: Estimate;
+  notes: string[];
+  run: () => Promise<void>;
+}
 
 export function Analysis() {
   const { state, dispatch, toast } = useStore();
@@ -201,6 +260,11 @@ export function Analysis() {
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [result, setResult] = useState<{ r: CollectionResult; ms: Material[] } | null>(null);
   const run = useRunner();
+  const [cost] = useCostSettings();
+  const [basis, setBasis] = useState<AnalysisBasis>('abstract');
+  const [model, setModel] = useState(cost.model);
+  const [pending, setPending] = useState<Pending | null>(null);
+  useEffect(() => setModel(cost.model), [cost.model]);
 
   useEffect(() => {
     if (!project) return;
@@ -235,19 +299,54 @@ export function Analysis() {
   };
   const fullBrief = (): AnalysisBrief => ({ ...brief, topic: brief.topic.trim(), keywords });
 
+  /** 원문 기반일 때 저장된 원문을 읽는다 (이 기기 → 클라우드). 못 읽은 자료는 결과에서 빠진다 */
+  async function loadDocs(ms: Material[]): Promise<Map<string, FullTextDoc>> {
+    const userId = authUser()?.id;
+    const docs = new Map<string, FullTextDoc>();
+    if (!userId) return docs;
+    for (const m of ms) {
+      if (!m.fulltext) continue;
+      const d = await loadFullText(userId, m.id, m.fulltext.hash);
+      if (d) docs.set(m.id, d);
+    }
+    return docs;
+  }
+
   async function runAll() {
     if (!ready()) return;
     if (targets.length < 2) return toast('전체 분석은 자료 2건 이상을 선택하세요. 한 편은 "선택 논문 분석"을 사용하세요.', 'info');
-    const signal = run.start('all');
     const b = fullBrief();
+    const needDocs = basis === 'fulltext' ? targets.filter((m) => !m.analysis?.analyzedAt && m.fulltext) : [];
+    const docs = await loadDocs(needDocs);
+    const req = collectionRequest(b, project!, targets, basis, docs);
+    const schemaTokens = estimateTokens(JSON.stringify(COLLECTION_SCHEMA));
+    const est = estimate(model, [{ label: '전체 분석', inputTokens: req.inputTokens + schemaTokens, maxOutputTokens: COLLECTION_MAX_TOKENS }], cost);
+    const missing = needDocs.length - docs.size;
+    setPending({
+      title: '전체 분석 실행 확인',
+      estimate: est,
+      notes: [
+        `근거 구성: ${req.scope}`,
+        basis === 'fulltext' && !needDocs.length ? '분석이 없는 자료 중 원문이 등록된 자료가 없어, 원문 보충 없이 진행합니다.' : '',
+        missing > 0 ? `원문을 불러오지 못한 자료 ${missing}건은 초록·서지로만 분석합니다 (원문 다시 등록 필요).` : '',
+      ].filter(Boolean),
+      run: () => execAll(b, req.content, req.scope),
+    });
+  }
+
+  async function execAll(b: AnalysisBrief, content: string, scope: string) {
+    const signal = run.start('all');
     try {
-      const { data, model } = await generate<CollectionResult>({
+      const { data, model: used, usage } = await generate<CollectionResult>({
         system: ANALYSIS_SYSTEM,
-        content: collectionPrompt(b, project!, targets),
+        content,
         schema: COLLECTION_SCHEMA as unknown as Record<string, unknown>,
+        maxTokens: COLLECTION_MAX_TOKENS,
+        model,
         onProgress: run.setChars,
         signal,
       });
+      const cost$ = usage ? usageCost(model, usage, cost.prices) : undefined;
       setResult({ r: data, ms: targets });
       dispatch({
         type: 'addOutput',
@@ -257,13 +356,13 @@ export function Analysis() {
           kind: '전체 분석',
           title: `전체 분석 — ${b.keywords.slice(0, 3).join(', ')} (${targets.length}건)`,
           createdAt: new Date().toISOString(),
-          model,
-          content: collectionToMarkdown(data, b, targets),
+          model: used,
+          content: `${collectionToMarkdown(data, b, targets)}\n\n## 분석 정보\n- 근거: ${basis === 'fulltext' ? '원문 기반' : '초록 기반'} — ${scope}\n- 모델: ${modelLabel(used)}${usage ? `\n- 사용 토큰: 입력 ${usage.inputTokens.toLocaleString()} · 출력 ${usage.outputTokens.toLocaleString()} · 추정 비용 ${usd(cost$ ?? 0)}` : ''}`,
           materialIds: targets.map((m) => m.id),
         },
       });
       dispatch({ type: 'log', event: { projectId: project!.id, kind: '분석', text: `자료 ${targets.length}건 전체 분석을 실행했습니다.` } });
-      toast('전체 분석을 마쳤습니다. 결과는 AI 결과물 보관함에도 저장됩니다.');
+      toast(`전체 분석을 마쳤습니다${cost$ !== undefined ? ` (추정 비용 ${usd(cost$)})` : ''}. 결과는 AI 결과물 보관함에도 저장됩니다.`);
     } catch (e) {
       toast(e instanceof AiError ? e.message : String(e), 'error');
     } finally {
@@ -273,23 +372,53 @@ export function Analysis() {
 
   async function runOne(m: Material) {
     if (!ready()) return;
+    const b = fullBrief();
+    let doc: FullTextDoc | undefined;
+    if (basis === 'fulltext') {
+      if (!m.fulltext) return toast('이 논문에는 등록된 원문이 없습니다. 아래에서 PDF 원문을 등록하거나 초록 기반으로 분석하세요.', 'error');
+      doc = (await loadDocs([m])).get(m.id);
+      if (!doc) return toast('원문을 불러오지 못했습니다 (이 기기와 클라우드 모두 없음 또는 손상). PDF를 다시 등록하거나 초록 기반으로 분석하세요.', 'error');
+    }
+    const key = paperCacheKey(m, basis, model, b);
+    if (cacheHit(m, key) && !window.confirm('같은 근거·분석 기준·모델로 분석한 결과가 이미 있어 다시 호출하지 않아도 됩니다.\n그래도 새로 분석할까요? (비용 발생)')) return;
+    // 원문 예산: 입력 한도의 80% 안에서 (한국어는 글자 ≈ 토큰)
+    const budget = Math.max(4000, Math.min(PAPER_FULLTEXT_CHARS, Math.floor(cost.maxInputTokens * 0.8) - 4000));
+    const req = paperRequest(b, project!, m, basis, doc, budget);
+    setPending({
+      title: '논문 분석 실행 확인',
+      estimate: estimate(model, [req.plan], cost),
+      notes: [
+        `근거: ${basis === 'fulltext' ? '원문 기반' : '초록 기반'} — ${req.scope}`,
+        m.analysis?.analyzedAt ? '이 논문의 기존 AI 분석은 새 결과로 바뀝니다. 나의 관점·연구 기록은 그대로입니다.' : '',
+      ].filter(Boolean),
+      run: () => execOne(m, req, doc, key),
+    });
+  }
+
+  async function execOne(m: Material, req: PaperRequest, doc: FullTextDoc | undefined, key: string | null) {
     const signal = run.start('one');
     try {
-      const { data, model } = await generate<AnalysisT>({
-        system: ANALYSIS_SYSTEM,
-        content: paperPrompt(fullBrief(), project!, m),
-        schema: PAPER_SCHEMA as unknown as Record<string, unknown>,
+      const { data, model: used, usage } = await generate<Parameters<typeof finishPaper>[0]['data']>({
+        system: req.system,
+        content: req.content,
+        schema: req.schema,
+        maxTokens: req.maxTokens,
+        model,
         onProgress: run.setChars,
         signal,
       });
-      const a: AnalysisT = { ...data, relevance: Math.min(5, Math.max(1, Math.round(data.relevance))), citationCandidate: '', model, analyzedAt: new Date().toISOString() };
+      const a = finishPaper({ data, basis: doc ? 'fulltext' : 'abstract', doc, scope: req.scope, model: used || model, usage, prices: cost.prices, cacheKey: key });
       dispatch({ type: 'update', id: m.id, patch: { analysis: a } });
+      const evidence = a.evidence?.length
+        ? `\n\n## 원문 근거\n${a.evidence.map((e) => `- [${e.verified ? '원문 확인' : '원문에서 못 찾음'}] ${e.section}${e.pages ? ` p.${e.pages}` : ''}: "${e.quote}"${e.point ? ` → ${e.point}` : ''}`).join('\n')}`
+        : '';
+      const info = `\n\n## 분석 정보\n- 근거: ${a.basis === 'fulltext' ? '원문 기반' : '초록 기반'} — ${a.scope}\n- 모델: ${modelLabel(a.model)}${a.usage ? `\n- 사용 토큰: 입력 ${a.usage.inputTokens.toLocaleString()} · 출력 ${a.usage.outputTokens.toLocaleString()} · 추정 비용 ${usd(a.usage.costUsd)}` : ''}`;
       dispatch({
         type: 'addOutput',
-        output: { id: uid(), projectId: project!.id, kind: '개별 분석', title: `논문 분석 — ${m.title}`, createdAt: new Date().toISOString(), model, content: paperToMarkdown(a, m), materialIds: [m.id] },
+        output: { id: uid(), projectId: project!.id, kind: '개별 분석', title: `논문 분석 — ${m.title}`, createdAt: new Date().toISOString(), model: a.model ?? model, content: paperToMarkdown(a, m) + evidence + info, materialIds: [m.id] },
       });
-      dispatch({ type: 'log', event: { projectId: project!.id, kind: '분석', text: `'${m.title}' 논문을 분석했습니다.` } });
-      toast('논문 분석을 마쳤습니다.');
+      dispatch({ type: 'log', event: { projectId: project!.id, kind: '분석', text: `'${m.title}' 논문을 분석했습니다 (${a.basis === 'fulltext' ? '원문' : '초록'} 기반).` } });
+      toast(`논문 분석을 마쳤습니다${a.usage ? ` (추정 비용 ${usd(a.usage.costUsd)})` : ''}.`);
     } catch (e) {
       toast(e instanceof AiError ? e.message : String(e), 'error');
     } finally {
@@ -310,7 +439,7 @@ export function Analysis() {
       <PageHeader
         title="AI 분석"
         desc="모아 둔 자료를 AI가 내 주제·키워드 기준으로 판단하고 인사이트를 줍니다. (원고 작성은 AI 집필에서)"
-        badges={<StatusBadge s="ai">{AI_MODEL_LABEL}</StatusBadge>}
+        badges={<StatusBadge s="ai">{modelLabel(model)}</StatusBadge>}
       />
 
       <Card title="① 분석 기준 — AI에게 주제와 키워드를 알려 주세요" className="brief-card">
@@ -361,6 +490,16 @@ export function Analysis() {
         </button>
       </div>
 
+      {tab !== 'history' && (
+        <div className="analysis-mode">
+          <b className="small">분석 근거</b>
+          <label className="radio"><input type="radio" name="basis" checked={basis === 'abstract'} onChange={() => setBasis('abstract')} disabled={!!run.busy} />초록 기반</label>
+          <label className="radio"><input type="radio" name="basis" checked={basis === 'fulltext'} onChange={() => setBasis('fulltext')} disabled={!!run.busy} />원문 기반 <small className="muted">(PDF 전체가 아니라 초록·서론·결론과 주제 관련 장·절을 골라 최대 {PAPER_FULLTEXT_CHARS.toLocaleString()}자만 전송, 참고문헌 제외)</small></label>
+          <ModelSelect value={model} onChange={setModel} disabled={!!run.busy} />
+          <span className="muted small">분석 1회 한도: 입력 {cost.maxInputTokens.toLocaleString()} 토큰 · {usd(cost.maxCostUsd)}</span>
+        </div>
+      )}
+
       {tab === 'all' && (
         <>
           <Card
@@ -386,7 +525,7 @@ export function Analysis() {
                       <td className="muted">{i + 1}</td>
                       <td className="cell-title">{m.title}</td>
                       <td className="small">{[bibAuthors(m.bib).slice(0, 2).join(', '), m.bib?.year].filter(Boolean).join(' · ') || '-'}</td>
-                      <td><span className={hasBody(m) === '제목만' ? 'warn-tag' : 'chip'}>{hasBody(m)}</span></td>
+                      <td><span className={collectionSource(m, basis) === '제목만' ? 'warn-tag' : 'chip'}>{collectionSource(m, basis)}</span>{m.fulltext && <span className="chip chip-muted">원문</span>}</td>
                       <td>{hasMyView(m) ? <span className="ok-tag">있음</span> : <span className="muted small">-</span>}</td>
                       <td><Relevance value={m.relevance} /></td>
                     </tr>
@@ -399,7 +538,7 @@ export function Analysis() {
                 {run.busy === 'all' ? `AI가 자료 ${targets.length}건을 읽는 중… ${run.chars ? `(${run.chars.toLocaleString()}자 작성)` : ''}` : `③ 전체 분석 실행 (${targets.length}건)`}
               </button>
               {run.busy === 'all' && <button className="btn btn-sm" onClick={run.cancel}>취소</button>}
-              <span className="muted small">'제목만' 자료는 판단 근거가 약합니다. 초록이나 본문이 있는 자료를 넣으세요.</span>
+              <span className="muted small">저장된 논문별 분석이 있으면 그 결과를 재사용하고, 없는 자료만 초록{basis === 'fulltext' ? '·원문 일부(자료당 최대 1,500자)' : ''}를 보냅니다. 실행 전에 예상 비용을 확인합니다.</span>
             </div>
           </Card>
           {result && (
@@ -439,7 +578,7 @@ export function Analysis() {
                     <div>
                       <SourceTag type={selected.sourceType} />
                       <h2>{selected.title}</h2>
-                      <span className="muted small">AI가 읽을 내용: {hasBody(selected)}{selected.content ? ` (본문 ${selected.content.length.toLocaleString()}자)` : ''}</span>
+                      <span className="muted small">AI가 읽을 내용: {basis === 'fulltext' ? (selected.fulltext ? `원문 ${selected.fulltext.chars.toLocaleString()}자 중 선별한 장·절 최대 ${Math.min(selected.fulltext.chars, PAPER_FULLTEXT_CHARS).toLocaleString()}자 (PDF 전체 아님)` : '원문 없음 — PDF 원문 등록 필요') : hasBody(selected)}</span>
                     </div>
                     <button className="btn btn-primary" disabled={!!run.busy} onClick={() => runOne(selected)}>
                       {run.busy === 'one' ? `분석 중… ${run.chars ? `(${run.chars.toLocaleString()}자)` : ''}` : selected.analysis?.analyzedAt ? '다시 분석' : '이 논문 AI 분석'}
@@ -447,12 +586,13 @@ export function Analysis() {
                   </div>
                 </Card>
                 {selected.analysis?.analyzedAt ? (
-                  <Card title="AI 논문 분석" extra={<StatusBadge s="ai">{selected.analysis.model ?? 'Claude'}</StatusBadge>} className="result ai-outline">
+                  <Card title="AI 논문 분석" extra={<StatusBadge s="ai">{modelLabel(selected.analysis.model)}</StatusBadge>} className="result ai-outline">
                     <PaperView a={selected.analysis} />
                   </Card>
                 ) : selected.analysis ? (
                   <Card><Empty>이전 버전의 Demo 분석만 있습니다. "이 논문 AI 분석"으로 실제 분석을 실행하세요.</Empty></Card>
                 ) : null}
+                <FullTextPanel m={selected} />
                 <ResearcherNotes m={selected} />
               </>
             )}
@@ -461,6 +601,20 @@ export function Analysis() {
       )}
 
       {tab === 'history' && <OutputList kinds={['전체 분석', '개별 분석']} title="분석 기록 (AI 결과물)" />}
+      {pending && (
+        <CostConfirm
+          title={pending.title}
+          estimate={pending.estimate}
+          settings={cost}
+          notes={pending.notes}
+          onClose={() => setPending(null)}
+          onConfirm={() => {
+            const go = pending.run;
+            setPending(null);
+            void go();
+          }}
+        />
+      )}
     </>
   );
 }

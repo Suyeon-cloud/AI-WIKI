@@ -787,3 +787,15 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 .clip-summary { margin: 8px 0; max-width: 320px; }
 .yt-unmatched { margin: 8px 0; }
 .yt-unmatched ul { margin: 4px 0 0; padding-left: 18px; max-height: 140px; overflow: auto; overflow-wrap: anywhere; }
+
+/* 원문 기반 분석 · 비용 확인 */
+.analysis-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 8px 0 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: #faf9f6; }
+.analysis-mode .radio { display: inline-flex; align-items: center; gap: 4px; }
+.model-select { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.analysis-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; overflow-wrap: anywhere; }
+.evidence-list { list-style: none; margin: 0; padding: 0; }
+.evidence-list li { padding: 6px 0; border-top: 1px dashed var(--line); }
+.evidence-list blockquote { margin: 4px 0; padding: 2px 10px; border-left: 3px solid var(--line); color: #444; overflow-wrap: anywhere; }
+.cost-table th { width: 110px; text-align: left; font-weight: 600; }
+.cost-notes { margin: 8px 0; padding-left: 18px; overflow-wrap: anywhere; }
+.cost-prices input { width: 90px; }

@@ -24,10 +24,14 @@ import { checkFootnotes, segmentLine, splitNotes } from '../src/lib/footnotes';
 import { clipAbstract, clipYear, defaultEnrichFields, enrichPatch, planEnrichment, reviewReasons, summarizeSelection, type ClipFile, type EnrichField } from '../src/lib/clip-enrich';
 import { matchBibQuery, matchRefType } from '../src/lib/bib-search';
 import { TranscriptError, buildTranscriptNote, dedupeCues, formatTime, groupSegments, parseVtt, pickTrack, ytdlpError, type YtInfo } from '../src/lib/yt-transcript';
+import { buildFullText, docHash, estimateTokens, fullTextMeta, queryTerms, sectionsBlock, selectSections, validDoc, verifyEvidence } from '../src/lib/fulltext';
+import { costUsd, estimate, normCost, usageCost } from '../src/lib/ai-cost';
+import { thesisContext } from '../src/lib/prompts';
+import { PAPER_MAX_TOKENS, cacheHit, collectionRequest, compactBlock, finishPaper, paperCacheKey, paperRequest, writingEvidence } from '../src/lib/paper-analysis';
 import { planTranscriptEnrich, summarizeTranscript, transcriptPatch, type YtField } from '../src/lib/yt-enrich';
 import { buildThesisHwpx, thesisXml, zipStore, type ThesisDoc } from '../src/lib/hwpx';
 import sampleThesis from '../.claude/skills/hufs-thesis-writing/examples/sample-thesis.json';
-import type { AppState, Bib, Material } from '../src/types';
+import type { AppState, Bib, Material, Project } from '../src/types';
 import obsidianNote from './fixtures/obsidian-real-note.md';
 import v1Storage from './fixtures/v1-storage.json';
 
@@ -1183,6 +1187,106 @@ async function youtubeTests() {
   eq(summarizeTranscript(plan.rows, new Set(), {}).count, 0, '선택 없으면 0건');
 }
 
+/* ───────── 17. PDF 원문 기반 분석 · 비용 최적화 (가상 논문) ───────── */
+
+const FT_PAGES = [
+  '가상 논문 제목\n목차\nⅠ. 서론 ........ 1\nⅡ. 이론적 배경 ........ 3\n국문초록\n본 연구는 생성형 AI 모션그래픽으로 한중 문화 정보를 시각화하는 콘텐츠를 개발하였다.',
+  'Ⅰ. 서론\n1. 연구 배경\n중국 드라마 장면에는 호칭과 예절 같은 문화 정보가 많다. 학습자는 이를 텍스트만으로 이해하기 어렵다.\n이 문장은 제목처럼 짧지만 끝난다.',
+  'Ⅱ. 이론적 배경\n이중부호화 이론에 따르면 언어 정보와 시각 정보를 함께 제시할 때 이해가 높아진다.\n' + '가상 본문 문장입니다. '.repeat(600),
+  'Ⅴ. 결론\n모션그래픽은 문화 정보의 맥락을 전달하는 데 효과적이었다. 후속 연구에서는 학습 효과를 검증해야 한다.\n참고문헌\n홍길동(2020). 가상 문헌. 가상학회지, 1(1), 1-10.',
+];
+
+async function fulltextTests() {
+  section('17. PDF 원문 분할 · 근거 선택 · 인용 확인 (가상 논문)');
+  const doc = buildFullText('ftm1', 'paper.pdf', FT_PAGES, 4, new Date('2026-11-20T00:00:00Z'));
+  const titles = doc.sections.map((s) => s.title.replace(/ \(\d+\/\d+\)$/, ''));
+  ok(!titles.some((t) => /\.{4}/.test(t)), '목차 줄(…… 쪽 번호)은 장 제목으로 보지 않음');
+  eq([...new Set(titles)], ['앞부분', '국문초록', 'Ⅰ. 서론 · 1. 연구 배경', 'Ⅱ. 이론적 배경', 'Ⅴ. 결론', '참고문헌'], '장·절 제목 인식 (장 바로 뒤 절 제목은 이어 붙임)');
+  eq(doc.sections.map((s) => s.kind).filter((k, i, a) => a.indexOf(k) === i), ['front', 'abstract', 'intro', 'body', 'conclusion', 'references'], '절 종류 분류');
+  ok(!titles.includes('이 문장은 제목처럼 짧지만 끝난다.'), '문장으로 끝나는 짧은 줄은 제목이 아님');
+  const theory = doc.sections.filter((s) => s.title.startsWith('Ⅱ. 이론적 배경'));
+  ok(theory.length >= 2 && theory.every((s) => s.text.length <= 6000) && /\(1\/\d\)$/.test(theory[0].title), '긴 절은 6,000자 이하 조각으로 나누고 (1/n) 표시');
+  eq([doc.sections.find((s) => s.kind === 'conclusion')?.pageFrom, doc.sections.find((s) => s.kind === 'intro')?.pageFrom], [4, 2], '절마다 쪽 번호 기록');
+  eq(doc.hash, docHash(doc.sections), '원문 해시 = 절 텍스트 해시');
+  ok(buildFullText('ftm1', 'paper.pdf', [...FT_PAGES.slice(0, 3), FT_PAGES[3] + ' 추가'], 4).hash !== doc.hash, '원문이 바뀌면 해시도 바뀜 (캐시 무효화)');
+  eq(validDoc(JSON.parse(JSON.stringify(doc)), 'ftm1')?.hash, doc.hash, '저장한 원문 문서 검증 통과');
+  eq([validDoc({ ...doc, materialId: 'other' }, 'ftm1'), validDoc({ ...doc, sections: doc.sections.slice(1) }, 'ftm1')], [undefined, undefined], '다른 자료의 문서·손상된 문서는 거부');
+  eq([estimateTokens('가나다라'), estimateTokens('abcdefg'), estimateTokens('')], [4, 2, 0], '토큰 추정 (한글 1자=1, 그 밖 3.5자=1)');
+
+  const terms = queryTerms('모션그래픽 문화 정보', ['이중부호화', '중국 드라마']);
+  const sel = selectSections(doc.sections, terms, 3000);
+  ok(sel.chars <= 3000, '선택 조각은 예산(글자 수)을 넘지 않음');
+  ok(!sel.sections.some((s) => s.kind === 'references'), '참고문헌은 분석 대상에서 제외');
+  ok(sel.sections.some((s) => s.kind === 'abstract') && sel.sections.some((s) => s.kind === 'conclusion'), '초록·결론을 우선 포함');
+  eq(sel.sections.map((s) => doc.sections.indexOf(s)), [...sel.sections.map((s) => doc.sections.indexOf(s))].sort((a, b) => a - b), '보내는 조각은 문서 순서');
+  ok(/원문 [\d,]+자 중 [\d,]+자/.test(sel.scope) && /p\.4/.test(sel.scope), '분석 범위 설명에 분량·장·쪽 표시');
+  ok(sectionsBlock(sel.sections).includes('<원문 절="Ⅴ. 결론" 쪽="4">'), '원문 블록에 장·절과 쪽 표시');
+
+  const ev = verifyEvidence([
+    { section: 'Ⅴ. 결론', quote: '모션그래픽은  문화 정보의 맥락을\n전달하는 데 효과적이었다', point: '효과' },
+    { section: 'Ⅱ', quote: '원문에 없는 그럴듯한 문장을 지어냈다', point: '' },
+    { section: 'x', quote: '짧다', point: '' },
+  ], doc.sections);
+  eq(ev.map((e) => [e.verified, e.pages ?? null]), [[true, '4'], [false, null], [false, null]], '인용 확인: 띄어쓰기·줄바꿈 차이는 허용, 지어낸 인용·너무 짧은 인용은 미확인');
+
+  section('17-1. 모델·단가·한도 · 비용 추정');
+  eq(normCost({ model: 'gpt-x', maxCostUsd: -1, prices: { 'claude-opus-5-5': { input: 'a', output: 30 } } }).model, 'claude-haiku-5-5', '알 수 없는 모델 → 기본 저비용 모델');
+  eq([normCost({ model: 'claude-opus-5-5', maxCostUsd: 1 }).model, normCost({ model: 'claude-opus-5-5', maxCostUsd: 1 }).writingModel, normCost({ model: 'claude-opus-5-5', maxCostUsd: 1 }).maxCostUsd, normCost({ writingModel: 'claude-haiku-5-5' }).writingModel, normCost({ writingModel: 'x' }).writingModel], ['claude-opus-5-5', 'claude-sonnet-5-5', 1, 'claude-haiku-5-5', 'claude-sonnet-5-5'], '기능별 모델: 기존 저장값(분석 모델·한도) 유지, 집필 모델은 없으면 Sonnet 기본');
+  eq(normCost({ prices: { 'claude-opus-5-5': { input: 'a', output: 30 } } }).prices['claude-opus-5-5'], { input: 4, output: 30 }, '단가: 잘못된 값만 기본값, 바꾼 값은 유지');
+  eq(normCost({ maxCostUsd: -1, maxInputTokens: 10 }).maxCostUsd, 0.3, '한도 범위 밖이면 기본값');
+  eq(+costUsd('claude-haiku-5-5', 10_000, 2_000).toFixed(6), 0.002, 'Haiku 5.5: 입력 0.10 · 출력 0.50 $/백만');
+  eq(+costUsd('claude-haiku-5-5', 200_000, 2_000).toFixed(6), 0.105, 'Haiku 5.5: 입력 10만 토큰 초과 시 상위 단가');
+  eq(+costUsd('claude-opus-5-5', 10_000, 2_000).toFixed(6), 0.08, 'Opus 5.5: 입력 4 · 출력 20 $/백만');
+  const est = estimate('claude-opus-5-5', [{ label: 'a', inputTokens: 70_000, maxOutputTokens: 8000 }], normCost({ maxInputTokens: 60_000, maxCostUsd: 0.3 }));
+  eq([est.calls, est.overTokens, est.overCost, +est.maxUsd.toFixed(3)], [1, true, true, 0.44], '예상 비용·호출 수·한도 초과 판정');
+  eq(+usageCost('claude-sonnet-5-5', { inputTokens: 1000, outputTokens: 500, cacheReadTokens: 10_000 }).toFixed(6), 0.009, '실제 사용량 비용 (캐시 읽기 0.1배)');
+
+  section('17-2. 논문별 분석 요청 · 캐시 · 근거 기록');
+  const proj = { id: 'p1', name: 'P', topic: 'AI 모션그래픽', keywords: ['모션그래픽'], overview: '', defaultView: '' } as unknown as Project;
+  const brief = { topic: 'AI 모션그래픽 한중 문화 콘텐츠', keywords: ['모션그래픽', '중국 드라마'], view: '' };
+  const clip = '인기 검색어 메뉴 '.repeat(2000);
+  const paper = mat(undefined, { id: 'ftm1', title: '가상 논문', abstract: '가상 초록입니다.', content: clip, myView: '내 해석', fulltext: fullTextMeta(doc, false) });
+  const abs = paperRequest(brief, proj, paper, 'abstract');
+  ok(abs.content.includes('가상 초록입니다.') && !abs.content.includes('인기 검색어 메뉴'), '초록 기반: 초록만 보내고 상세페이지 클리핑 본문은 보내지 않음');
+  ok(abs.plan.inputTokens < 3000 && abs.plan.maxOutputTokens === PAPER_MAX_TOKENS, '초록 기반 예상 입력이 작음 · 출력 상한 고정');
+  const full = paperRequest(brief, proj, paper, 'fulltext', doc, 4000);
+  ok(full.content.includes('<원문 절=') && !full.content.includes('홍길동(2020)') && !full.content.includes('인기 검색어 메뉴'), '원문 기반: 선택한 장·절만 보내고 참고문헌·클리핑은 제외');
+  ok(JSON.stringify(full.schema).includes('"evidence"') && !JSON.stringify(abs.schema).includes('"evidence"'), '원문 기반에서만 근거 인용(evidence) 요구');
+  ok(full.content.includes('연구자의 관점(직접 작성): 내 해석') && full.content.includes('연구자 기록은 연구자의 해석이므로 원문 근거로 쓰지 않는다'), '연구자 관점은 연구자 기록으로 표시해 전송');
+  const k1 = paperCacheKey(paper, 'fulltext', 'claude-haiku-5-5', brief);
+  ok(!!k1 && k1 !== paperCacheKey(paper, 'fulltext', 'claude-opus-5-5', brief) && k1 !== paperCacheKey(paper, 'abstract', 'claude-haiku-5-5', brief) && k1 !== paperCacheKey(paper, 'fulltext', 'claude-haiku-5-5', { ...brief, keywords: ['다른'] }), '캐시 키: 모델·근거·분석 기준이 바뀌면 달라짐');
+  eq(k1, paperCacheKey(paper, 'fulltext', 'claude-haiku-5-5', { ...brief, keywords: ['중국 드라마', '모션그래픽'] }), '키워드 순서만 다르면 같은 캐시');
+  eq(paperCacheKey({ ...paper, fulltext: undefined }, 'fulltext', 'claude-haiku-5-5', brief), null, '원문 없는 자료는 원문 기반 캐시 키 없음');
+  const a = finishPaper({
+    data: { summary: 'S', topic: 'T', keywords: ['k'], relevance: 9, rationale: 'r', connection: 'c', insights: ['i'], method: 'm', findings: 'f', limitations: 'l', usageIdea: 'u', evidence: [{ section: 'Ⅴ. 결론', quote: '후속 연구에서는 학습 효과를 검증해야 한다', point: '한계' }, { section: 'x', quote: '없는 문장을 인용했다고 주장함', point: '' }] },
+    basis: 'fulltext', doc, scope: full.scope, model: 'claude-haiku-5-5', usage: { inputTokens: 5000, outputTokens: 1000 }, cacheKey: k1, now: new Date('2026-11-20T00:00:00Z'),
+  });
+  eq([a.relevance, a.basis, a.cacheKey === k1, a.evidence?.map((e) => e.verified), a.usage], [5, 'fulltext', true, [true, false], { inputTokens: 5000, outputTokens: 1000, costUsd: 0.001 }], '결과: 관련도 보정·근거 확인·사용량·캐시 키 기록');
+  ok(cacheHit({ ...paper, analysis: a }, k1) && !cacheHit({ ...paper, analysis: a }, paperCacheKey(paper, 'fulltext', 'claude-opus-5-5', brief)), '같은 조건이면 캐시 사용, 모델이 바뀌면 재분석');
+  const saved = normalizeMaterial(JSON.parse(JSON.stringify({ ...paper, analysis: a })), 'x')!;
+  eq([saved.analysis?.basis, saved.analysis?.evidence?.length, saved.analysis?.usage?.costUsd, saved.fulltext?.hash, saved.myView], ['fulltext', 2, 0.001, doc.hash, '내 해석'], '저장·불러오기 후에도 근거·사용량·원문 정보·연구 기록 유지');
+  ok(!JSON.stringify(saved).includes('이중부호화 이론에 따르면'), '자료 JSON에는 원문 텍스트가 들어가지 않음');
+  eq(normalizeMaterial({ id: 'z', title: 'z', fulltext: { hash: '' }, analysis: { summary: 's', basis: 'pdf', usage: { inputTokens: 'x' } } }, 'z')?.analysis?.basis, undefined, '형식이 틀린 근거·원문 정보는 버림');
+
+  section('17-3. 전체 분석·집필: 저장된 분석 재사용 · 원문 일부만 보충');
+  const analyzed = { ...paper, id: 'pa', analysis: a };
+  const noAnalysis = { ...paper, id: 'pb', analysis: undefined, abstract: '두 번째 초록' };
+  const titleOnly = mat(undefined, { id: 'pc', title: '제목만', fulltext: undefined });
+  const blockA = compactBlock(analyzed, 0);
+  ok(blockA.includes('[AI 분석 · 원문 기반') && blockA.includes('원문 근거(Ⅴ. 결론, p.4)') && !blockA.includes('가상 초록입니다.') && !blockA.includes('없는 문장을 인용'), '분석이 있으면 분석 요약·확인된 근거만 (초록·미확인 인용 생략)');
+  ok(blockA.includes('[연구자 기록 — AI 분석이 아닌 연구자의 해석]\n나의 관점: 내 해석'), '연구자 기록은 AI 분석과 구분해 표시');
+  const req = collectionRequest(brief, proj, [analyzed, noAnalysis, titleOnly], 'fulltext', new Map([['pb', { ...doc, materialId: 'pb' }]]));
+  eq([req.fromAnalysis, req.fromFulltext], [1, 1], '전체 분석: 저장된 분석 1건 재사용, 분석 없는 자료만 원문 보충');
+  ok(req.content.includes('(초록·원문 없음 — 제목 수준에서만 판단 가능)') && req.content.includes('저장된 논문별 분석 1건'), '근거 범위를 명시');
+  const reqAbs = collectionRequest(brief, proj, [analyzed, noAnalysis], 'abstract', new Map([['pb', doc]]));
+  eq([reqAbs.fromFulltext, reqAbs.content.includes('<원문 절=')], [0, false], '초록 기반 전체 분석은 원문을 보내지 않음');
+  ok(reqAbs.inputTokens < req.inputTokens, '원문 보충은 입력량을 늘리고, 예상 토큰에 반영');
+  const ctx = thesisContext(proj, '가상', [], [analyzed, noAnalysis], undefined, undefined, compactBlock);
+  ok(ctx.includes('[AI 분석 · 원문 기반') && ctx.includes('초록: 두 번째 초록'), '집필 맥락: 저장된 분석·초록 압축 블록 사용 (map 인자 오류 없음)');
+  const w = writingEvidence(queryTerms('이론적 배경', ['이중부호화']), [analyzed], new Map([['pa', doc]]), 3000);
+  ok(w.used <= 3000 && w.materials === 1 && !w.block.includes('국문초록') && (w.block.match(/<원문 절=/g) ?? []).length <= 2, '집필 근거: 예산 안에서 자료당 최대 2조각, 초록·원문 전체는 보내지 않음');
+}
+
 (async () => {
   await storageTests();
   await backupTests();
@@ -1200,6 +1304,7 @@ async function youtubeTests() {
   await clipTests();
   bibSearchTests();
   await youtubeTests();
+  await fulltextTests();
   console.log(`\n${failed ? '실패' : '모두 통과'}: ${passed}건 통과, ${failed}건 실패`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => {

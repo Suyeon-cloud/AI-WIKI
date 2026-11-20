@@ -48,6 +48,7 @@ if (seedPath) {
     db.materials.set(m.id, { position: db.materials.size, data });
     db.meta.state.materialOrder.push(m.id);
   }
+  if (Array.isArray(seed.theses)) db.meta.state.theses = seed.theses; // 가상 원고(목차) — AI 집필 화면 확인용
 }
 
 const send = (res, status, body, headers = {}) => {
@@ -55,7 +56,7 @@ const send = (res, status, body, headers = {}) => {
   res.end(body === undefined ? '' : JSON.stringify(body));
 };
 const readBody = (req) => new Promise((ok) => { let s = ''; req.on('data', (c) => (s += c)); req.on('end', () => ok(s ? JSON.parse(s) : null)); });
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.woff2': 'font/woff2' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.pdf': 'application/pdf', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.woff2': 'font/woff2' };
 
 createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${port}`);
@@ -94,6 +95,26 @@ createServer(async (req, res) => {
   if (p === '/__state') return send(res, 200, { revision: db.meta.revision, events: db.meta.state.events, materials: [...db.materials.keys()], log: db.log });
   if (p === '/__fail-next') { db.failNext = 1; return send(res, 200, { ok: true }); }
   if (p === '/__material') return send(res, 200, db.materials.get(url.searchParams.get('id') ?? '')?.data ?? null);
+  // Storage 버킷이 아직 없는 상태 (마이그레이션 미적용) — 앱은 이 기기에만 저장해야 한다
+  if (p.startsWith('/storage/')) return send(res, 400, { statusCode: '404', error: 'Bucket not found', message: 'Bucket not found' });
+  // 가짜 Claude: 실제 API를 부르지 않고, 요청한 스키마에 맞는 가상 결과와 사용량을 스트리밍한다
+  if (p === '/api/claude' && req.method === 'GET') return send(res, 200, { ready: true, mode: 'byok', model: 'claude-haiku-5-5', models: ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'] });
+  if (p === '/api/claude' && req.method === 'POST') {
+    const b = await readBody(req);
+    const c = String(b.content);
+    db.aiCalls = [...(db.aiCalls ?? []), { model: b.model, maxTokens: b.maxTokens, chars: c.length, hasFulltext: c.includes('<원문 절='), hasWritingEvidence: c.includes('[관련 원문 근거'), hasAiAnalysisBlock: c.includes('[AI 분석 ·'), hasResearcherBlock: c.includes('[연구자 기록'), hasReferences: c.includes('References'), hasClipNoise: c.includes('인기 검색어') }];
+    const props = Object.keys(b.schema?.properties ?? {});
+    const firstChunk = c.match(/<원문 절="([^"]+)"[^>]*>\n([^\n]{30,})/);
+    // 스키마 모양대로 가상 값 (배열은 1개 항목: 목차 등 화면 흐름 확인용)
+    const sample = (s, k = '') => s?.type === 'array' ? [sample(s.items, k)] : s?.type === 'object' ? Object.fromEntries(Object.keys(s.properties ?? {}).map((x) => [x, sample(s.properties[x], x)])) : s?.type === 'integer' ? 4 : `가상 ${k || '값'}`;
+    const data = sample(b.schema);
+    if (props.includes('evidence') && firstChunk) data.evidence = [{ section: firstChunk[1], quote: firstChunk[2].slice(0, 60), point: '가상 근거' }, { section: 'x', quote: '원문에 없는 가상 인용 문장입니다', point: '' }];
+    if (props.includes('themes')) Object.assign(data, { themes: [], debates: [], gaps: [], materialNotes: [] });
+    res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8' });
+    res.end([{ type: 'text', text: JSON.stringify(data) }, { type: 'done', model: b.model, usage: { inputTokens: Math.ceil(String(b.content).length / 2), outputTokens: 900 } }].map((x) => JSON.stringify(x)).join('\n') + '\n');
+    return;
+  }
+  if (p === '/__ai') return send(res, 200, db.aiCalls ?? []);
   if (p.startsWith('/api/')) return send(res, 200, { configured: false, message: '로컬 테스트: AI 서버 없음' });
   // ── 정적 파일 (SPA) ──
   const file = normalize(join(dir, p === '/' ? 'index.html' : p));

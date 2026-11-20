@@ -39,7 +39,7 @@ export function materialBlock(m: Material, i: number, bodyChars: number): string
   return lines.filter(Boolean).join('\n');
 }
 
-const briefText = (b: AnalysisBrief, p: Project) =>
+export const briefText = (b: AnalysisBrief, p: Project) =>
   [
     `연구 주제: ${b.topic}`,
     `핵심 키워드: ${b.keywords.join(', ')}`,
@@ -297,7 +297,7 @@ export const ABSTRACT_SCHEMA = {
   },
 } as const;
 
-export function thesisContext(p: Project, title: string, outline: { title: string; sections: string[] }[], ms: Material[], insight?: string, journalName?: string): string {
+export function thesisContext(p: Project, title: string, outline: { title: string; sections: string[] }[], ms: Material[], insight?: string, journalName?: string, block: (m: Material, i: number) => string = (m, i) => materialBlock(m, i, ms.length > 20 ? 0 : 1500)): string {
   return [
     `[논문 정보]`,
     ...(journalName !== undefined
@@ -313,6 +313,6 @@ export function thesisContext(p: Project, title: string, outline: { title: strin
     insight ? `\n[AI 전체 분석 결과 (연구자가 참고용으로 첨부)]\n${cut(insight, 6000)}` : '',
     '',
     `[자료 목록] — 인용은 이 목록의 자료만 (저자, 연도) 형식으로`,
-    ...ms.map((m, i) => materialBlock(m, i, ms.length > 20 ? 0 : 1500)),
+    ...ms.map((m, i) => block(m, i)), // map의 세 번째 인자(배열)를 넘기지 않는다
   ].join('\n');
 }

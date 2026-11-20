@@ -20,6 +20,7 @@ import {
   type ResearchSettings,
   type SourceType,
   type TranscriptSummary,
+  type FullTextInfo,
   type ViewStatus,
   type WritingState,
 } from '../types';
@@ -66,7 +67,18 @@ function normAnalysis(x: unknown): Analysis | undefined {
     usageIdea: nonEmpty(x.usageIdea),
     model: nonEmpty(x.model),
     analyzedAt: isoDate(x.analyzedAt),
+    basis: x.basis === 'abstract' || x.basis === 'fulltext' ? x.basis : undefined,
+    cacheKey: nonEmpty(x.cacheKey),
+    scope: nonEmpty(x.scope),
+    evidence: Array.isArray(x.evidence) ? x.evidence.filter(isObj).filter((e) => typeof e.quote === 'string').slice(0, 12).map((e) => ({ section: str(e.section) ?? '', quote: String(e.quote), ...(nonEmpty(e.point) ? { point: nonEmpty(e.point) } : {}), ...(nonEmpty(e.pages) ? { pages: nonEmpty(e.pages) } : {}), verified: e.verified === true })) : undefined,
+    usage: isObj(x.usage) && typeof x.usage.inputTokens === 'number' && typeof x.usage.outputTokens === 'number' && typeof x.usage.costUsd === 'number' ? { inputTokens: x.usage.inputTokens, outputTokens: x.usage.outputTokens, costUsd: x.usage.costUsd } : undefined,
   };
+}
+
+function normFullText(x: unknown): FullTextInfo | undefined {
+  if (!isObj(x) || typeof x.hash !== 'string' || !x.hash) return undefined;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+  return { hash: x.hash, fileName: str(x.fileName) ?? '', pages: n(x.pages), chars: n(x.chars), sections: n(x.sections), savedAt: isoDate(x.savedAt) ?? '', cloud: x.cloud === true };
 }
 
 function normTranscript(x: unknown): TranscriptSummary | undefined {
@@ -187,6 +199,7 @@ export function normalizeMaterial(x: unknown, fallbackTitle?: string): Material 
     external: normExternal(x.external),
     projectId: nonEmpty(x.projectId),
     abstract: nonEmpty(x.abstract),
+    fulltext: normFullText(x.fulltext),
     importedFrom: (['KCI PDF', 'KCI Open API', 'PDF', 'Google Drive', 'Obsidian', '직접 입력'] as const).find((v) => v === x.importedFrom),
   };
   // 저장된 상태값을 믿지 않고 서지정보 내용으로 판단 (유형별 필수 항목이 모두 있어야 '입력됨')

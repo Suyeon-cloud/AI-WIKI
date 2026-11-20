@@ -3,7 +3,12 @@ import type { AiOutputKind, Material, PaperType, ThesisChapter, ThesisDraft } fr
 import { useStore, useProject } from '../store';
 import SKILL_MD from '../../.claude/skills/hufs-thesis-writing/SKILL.md?raw';
 import JOURNAL_SKILL_MD from '../../.claude/skills/journal-article-writing/SKILL.md?raw';
-import { AI_MODEL_LABEL, AiError, generate } from '../lib/ai';
+import { AiError, aiModelLabel, aiWritingModel, generate } from '../lib/ai';
+import { authUser } from '../lib/auth';
+import { loadCost, usageCost, usd } from '../lib/ai-cost';
+import { estimateTokens, queryTerms, type FullTextDoc } from '../lib/fulltext';
+import { loadFullText } from '../lib/fulltext-store';
+import { compactBlock, writingEvidence } from '../lib/paper-analysis';
 import { buildThesisHwpx, sectionsOf, type HwpxTemplate, type ThesisDoc } from '../lib/hwpx';
 import { checkBib, formatCitation, segsToText, sortForStyle } from '../lib/citation';
 import { checkCitations, type CiteReport } from '../lib/cite-check';
@@ -123,13 +128,14 @@ export function Writing() {
     setBusy(label);
     setChars(0);
     try {
-      return await generate<T>({ system: isJournal ? JOURNAL_SKILL : SKILL, content: o.content, schema: o.schema as Record<string, unknown>, maxTokens: o.maxTokens, onProgress: setChars, signal: ctrl.current.signal });
+      return await generate<T>({ model: aiWritingModel(), system: isJournal ? JOURNAL_SKILL : SKILL, content: o.content, schema: o.schema as Record<string, unknown>, maxTokens: o.maxTokens, onProgress: setChars, signal: ctrl.current.signal });
     } finally {
       setBusy(null);
     }
   }
 
-  const context = () => thesisContext(project!, title, outline, basis, insight, isJournal ? (t!.journalName ?? '') : undefined);
+  // 근거 자료는 저장된 AI 분석·연구자 기록을 압축해 보낸다 (원문 전체는 보내지 않음)
+  const context = () => thesisContext(project!, title, outline, basis, insight, isJournal ? (t!.journalName ?? '') : undefined, compactBlock);
 
   async function suggestOutline() {
     if (!needAi()) return;
@@ -161,10 +167,22 @@ export function Writing() {
       .filter((x) => x.id !== c.id && x.text.trim())
       .map((x) => `${x.title}\n${x.text.slice(0, 800)}…`)
       .join('\n\n');
+    // 원문이 등록된 근거 자료에서 이 장과 관련된 장·절만 골라 붙인다 (자료당 최대 2조각, 전체 8,000자)
+    const userId = authUser()?.id;
+    const docs = new Map<string, FullTextDoc>();
+    if (userId) for (const m of basis) if (m.fulltext) { const d = await loadFullText(userId, m.id, m.fulltext.hash); if (d) docs.set(m.id, d); }
+    const ev = writingEvidence(queryTerms(c.title, c.sections, project!.keywords), basis, docs, 8000);
+    const evidenceText = ev.block ? `
+[관련 원문 근거 — 근거 자료 원문에서 이 장과 관련된 부분만 발췌. 인용할 때는 해당 자료의 (저자, 연도)로 표시]
+${ev.block}
+` : '';
+    const cost = loadCost(userId);
+    const draftTokens = estimateTokens(context() + evidenceText + others);
+    if (draftTokens > cost.maxInputTokens && !window.confirm(`이번 장 쓰기의 예상 입력이 약 ${draftTokens.toLocaleString()} 토큰으로 한도(${cost.maxInputTokens.toLocaleString()})를 넘습니다. 계속할까요?`)) return false;
     try {
-      const { data, model } = await call<{ text: string; citedIds: string[]; todo: string[] }>(`ch:${c.id}`, {
+      const { data, model, usage } = await call<{ text: string; citedIds: string[]; todo: string[] }>(`ch:${c.id}`, {
         content: `${context()}
-
+${evidenceText}
 ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
 [이번에 쓸 장] ${c.title}
 [절 구성] ${c.sections.filter((s) => s.trim()).join(' / ') || '(절을 적절히 구성)'}
@@ -175,6 +193,7 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
         maxTokens: 32000,
       });
       setChapter(c.id, { text: data.text, citedIds: data.citedIds });
+      if (usage) toast(`${c.title} 초안 완료 · 입력 ${usage.inputTokens.toLocaleString()} / 출력 ${usage.outputTokens.toLocaleString()} 토큰 · 추정 ${usd(usageCost(model || aiWritingModel(), usage, cost.prices))}${ev.materials ? ` · 원문 근거 ${ev.materials}건 활용` : ''}`, 'info');
       setTodo((x) => ({ ...x, [c.id]: data.todo }));
       dispatch({
         type: 'addOutput',
@@ -255,7 +274,7 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
       kind: (isJournal ? '학술지논문 HWPX' : '학위논문 HWPX') as AiOutputKind,
       title: `${name}`,
       createdAt: new Date().toISOString(),
-      model: AI_MODEL_LABEL,
+      model: aiModelLabel(aiWritingModel()),
       content: `# ${title}\n\n${t!.chapters.map((c) => `## ${c.title}\n\n${c.text}`).join('\n\n')}\n\n## 참고문헌\n${refs.map((m) => `- ${refLine(m)}`).join('\n')}`,
       materialIds: basis.map((m) => m.id),
     };
@@ -290,7 +309,7 @@ ${others ? `[이미 쓴 다른 장 (앞부분)]\n${others}\n` : ''}
       <PageHeader
         title="AI 집필"
         desc="논문 유형과 목차를 정하면 모은 자료를 근거로 장별 원고를 쓰고, 해당 유형의 형식에 맞춰 HWPX로 출력합니다."
-        badges={<><StatusBadge s="ai">{AI_MODEL_LABEL}</StatusBadge><span className="chip chip-strong">스킬: {isJournal ? 'journal-article-writing' : 'hufs-thesis-writing'}</span></>}
+        badges={<><StatusBadge s="ai">{aiModelLabel(aiWritingModel())}</StatusBadge><span className="chip chip-strong">스킬: {isJournal ? 'journal-article-writing' : 'hufs-thesis-writing'}</span></>}
       />
 
       <div className="tabs analysis-tabs paper-tabs" role="tablist">
