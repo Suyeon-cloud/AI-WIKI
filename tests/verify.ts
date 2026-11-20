@@ -25,10 +25,10 @@ import { clipAbstract, clipYear, defaultEnrichFields, enrichPatch, planEnrichmen
 import { matchBibQuery, matchRefType } from '../src/lib/bib-search';
 import { TranscriptError, buildTranscriptNote, dedupeCues, formatTime, groupSegments, parseVtt, pickTrack, ytdlpError, type YtInfo } from '../src/lib/yt-transcript';
 import { joinItems } from '../src/lib/pdf-text';
-import { assessQuality, buildFullText, docHash, evidenceMarkdown, evidenceMatch, fixChapterLine, roleOf, structureWarnings, estimateTokens, fullTextMeta, queryTerms, sectionsBlock, selectSections, validDoc, verifyEvidence } from '../src/lib/fulltext';
+import { assessQuality, buildFullText, docHash, evidenceMarkdown, evidenceMatch, fixChapterLine, manualSelection, roleOf, sectionsInPages, structureWarnings, estimateTokens, fullTextMeta, queryTerms, sectionsBlock, selectSections, validDoc, verifyEvidence } from '../src/lib/fulltext';
 import { costUsd, estimate, normCost, usageCost } from '../src/lib/ai-cost';
 import { thesisContext } from '../src/lib/prompts';
-import { PAPER_MAX_TOKENS, cacheHit, collectionRequest, compactBlock, finishPaper, paperCacheKey, paperRequest, writingEvidence } from '../src/lib/paper-analysis';
+import { PAPER_MAX_TOKENS, autoSectionIds, cacheHit, collectionRequest, compactBlock, finishPaper, paperCacheKey, paperRequest, writingEvidence } from '../src/lib/paper-analysis';
 import { planTranscriptEnrich, summarizeTranscript, transcriptPatch, type YtField } from '../src/lib/yt-enrich';
 import { buildThesisHwpx, thesisXml, zipStore, type ThesisDoc } from '../src/lib/hwpx';
 import sampleThesis from '../.claude/skills/hufs-thesis-writing/examples/sample-thesis.json';
@@ -1385,6 +1385,23 @@ async function fulltextTests() {
   ok(['method', 'results', 'conclusion', 'limits', 'abstract'].every((r) => rs.sections.some((x) => roleOf(x) === r)) && !rs.sections.some((x) => x.kind === 'front' || x.kind === 'references') && rs.warnings.length === 0, '연구방법·결과·결론·한계·초록 포함, 표지·목차·참고문헌 제외, 경고 없음');
   const cutDoc = buildFullText('cut', 'c.pdf', ['Ⅰ. 서론\n' + body('서론')], 463);
   ok(cutDoc.quality?.level === 'low' && cutDoc.quality.reasons.some((r) => r.includes('PDF 463쪽 중 앞 1쪽만 추출됨') && r.includes('결론')), '쪽 수 상한으로 뒷부분을 못 읽으면 품질 경고로 남김 (결론 누락 이유 표시)');
+  section('17-7. 원문 조각 직접 선택 · 쪽 범위 · 확인창 표시와 전송 내용 일치');
+  const thPaper = mat(undefined, { id: 'th', title: '가상 학위논문', abstract: '가상 초록', fulltext: fullTextMeta(td, false) });
+  const autoR = paperRequest(brief, proj, thPaper, 'fulltext', td, 24000);
+  eq(autoSectionIds(brief, td, 24000), autoR.selection!.sections.map((x) => x.id), '직접 선택 화면의 초기값 = 자동 선택과 같은 조각');
+  eq(sectionsInPages(td.sections, 56, 58).map((id) => td.sections.find((x) => x.id === id)!.title.replace(/ \(\d+\/\d+\)$/, '')).filter((v, i, a) => a.indexOf(v) === i), ['제5장 결론 및 제언', '5.2. 연구의 한계'], '쪽 범위와 겹치는 조각 (장·절 제목과 상관없이 쪽 기준)');
+  eq(sectionsInPages(td.sections, 58, 56), sectionsInPages(td.sections, 56, 58), '쪽 범위를 거꾸로 넣어도 같은 결과');
+  const pick = [...sectionsInPages(td.sections, 30, 31), td.sections[0].id].reverse();
+  const manR = paperRequest(brief, proj, thPaper, 'fulltext', td, 24000, pick);
+  const manIds = manR.selection!.sections.map((x) => x.id);
+  eq(manIds, td.sections.filter((x) => pick.includes(x.id)).map((x) => x.id), '직접 고른 조각만, 문서 순서로 (앞부분처럼 자동 선택이 빼는 조각도 직접 고르면 포함)');
+  const sentBlock = sectionsBlock(manR.selection!.sections);
+  ok(manR.content.includes(sentBlock) && manR.selection!.sections.every((x) => manR.scope.includes(x.title)), '확인창의 "실제로 보내는 원문"·범위 설명이 요청 본문과 일치');
+  ok(!td.sections.filter((x) => !pick.includes(x.id)).some((x) => manR.content.includes(`<원문 절="${x.title}"`)), '고르지 않은 조각은 보내지 않음');
+  ok(manR.scope.startsWith('직접 선택 — ') && manR.plan.inputTokens < autoR.plan.inputTokens, '직접 선택 표시, 예상 토큰은 고른 분량으로 다시 계산');
+  const big = manualSelection(td.sections, td.sections.map((x) => x.id), 24000);
+  ok(big.overBudget && big.warnings[0].includes('24,000자'), '한도를 넘게 고르면 잘라 보내지 않고 초과로 표시 (실행 막음)');
+  eq(manualSelection(td.sections, ['없는-id'], 24000).sections, [], '모르는 조각 id는 무시');
 
 }
 

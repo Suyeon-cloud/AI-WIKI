@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { authUser } from '../lib/auth';
 import { AI_MODELS, loadCost, modelLabel, saveCost, usd, type CostSettings, type Estimate } from '../lib/ai-cost';
 import { Modal } from './ui';
@@ -45,6 +45,8 @@ export function CostConfirm({
   settings,
   notes,
   warnings = [],
+  blocked,
+  children,
   onConfirm,
   onClose,
 }: {
@@ -54,6 +56,10 @@ export function CostConfirm({
   notes: string[];
   /** 실행 전에 꼭 확인할 문제 (원문 추출 품질 등). 있으면 확인 체크 후 실행 */
   warnings?: string[];
+  /** 실행할 수 없는 이유 (있으면 시작 버튼을 막음) */
+  blocked?: string;
+  /** 표 아래에 넣을 추가 화면 (원문 조각 선택 등) */
+  children?: ReactNode;
   onConfirm: () => void;
   onClose: () => void;
 }) {
@@ -63,10 +69,11 @@ export function CostConfirm({
     <Modal
       title={title}
       onClose={onClose}
+      wide={!!children}
       footer={
         <>
           <button className="btn" onClick={onClose}>취소</button>
-          <button className="btn btn-primary" onClick={onConfirm} disabled={over && !agree}>
+          <button className="btn btn-primary" onClick={onConfirm} disabled={(over && !agree) || !!blocked}>
             분석 시작
           </button>
         </>
@@ -81,6 +88,8 @@ export function CostConfirm({
           <tr><th>예상 비용</th><td>약 {usd(e.expectedUsd)} · 최대 {usd(e.maxUsd)} {e.overCost && <span className="warn-tag">한도 {usd(settings.maxCostUsd)} 초과</span>}</td></tr>
         </tbody>
       </table>
+      {children}
+      {blocked && <p className="warn-note small">{blocked}</p>}
       {warnings.length > 0 && (
         <ul className="warn-list small">
           {warnings.map((w) => <li key={w}>{w}</li>)}

@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { USAGE_SECTIONS, hasMyView, type Analysis as AnalysisT, type AnalysisBasis, type Material, type UsageSection } from '../types';
 import { useStore, useProject } from '../store';
 import { AiError, generate } from '../lib/ai';
 import { authUser } from '../lib/auth';
 import { estimate, modelLabel, usageCost, usd, type Estimate } from '../lib/ai-cost';
-import { estimateTokens, evidenceMarkdown, evidenceMatch, type FullTextDoc } from '../lib/fulltext';
+import { estimateTokens, evidenceMarkdown, evidenceMatch, sectionsBlock, textHash, type FullTextDoc } from '../lib/fulltext';
 import { loadFullText } from '../lib/fulltext-store';
 import {
   COLLECTION_MAX_TOKENS,
@@ -18,6 +18,7 @@ import {
 } from '../lib/paper-analysis';
 import { CostConfirm, ModelSelect, useCostSettings } from '../components/CostConfirm';
 import { FullTextPanel, fullTextWarnings } from '../components/FullTextPanel';
+import { SectionPicker } from '../components/SectionPicker';
 import { uid } from '../lib/utils';
 import { bibAuthors } from '../lib/citation';
 import {
@@ -289,6 +290,10 @@ interface Pending {
   estimate: Estimate;
   notes: string[];
   warnings?: string[];
+  /** 실행할 수 없는 이유 */
+  blocked?: string;
+  /** 원문 조각 확인·선택 화면 */
+  picker?: ReactNode;
   run: () => Promise<void>;
 }
 
@@ -427,17 +432,30 @@ export function Analysis() {
     if (cacheHit(m, key) && !window.confirm('같은 근거·분석 기준·모델로 분석한 결과가 이미 있어 다시 호출하지 않아도 됩니다.\n그래도 새로 분석할까요? (비용 발생)')) return;
     // 원문 예산: 입력 한도의 80% 안에서 (한국어는 글자 ≈ 토큰)
     const budget = Math.max(4000, Math.min(PAPER_FULLTEXT_CHARS, Math.floor(cost.maxInputTokens * 0.8) - 4000));
-    const req = paperRequest(b, project!, m, basis, doc, budget);
-    setPending({
-      title: '논문 분석 실행 확인',
-      estimate: estimate(model, [req.plan], cost),
-      notes: [
-        `근거: ${basis === 'fulltext' ? '원문 기반' : '초록 기반'} — ${req.scope}`,
-        m.analysis?.analyzedAt ? '이 논문의 기존 AI 분석은 새 결과로 바뀝니다. 나의 관점·연구 기록은 그대로입니다.' : '',
-      ].filter(Boolean),
-      warnings: basis === 'fulltext' ? [...fullTextWarnings(m), ...(req.selection?.warnings ?? [])] : [],
-      run: () => execOne(m, req, doc, key),
-    });
+    const autoReq = paperRequest(b, project!, m, basis, doc, budget);
+    const autoIds = autoReq.selection?.sections.map((s) => s.id) ?? [];
+    // 확인창을 (다시) 그린다: pick이 없으면 자동 선택, 있으면 직접 고른 조각으로 요청을 새로 만든다 → 표시·비용·전송 내용이 같은 요청에서 나온다
+    const show = (pick?: string[]) => {
+      const manual = !!doc && !!pick && !(pick.length === autoIds.length && pick.every((id, i) => id === autoIds[i]));
+      const req = manual ? paperRequest(b, project!, m, basis, doc, budget, pick) : autoReq;
+      const runKey = manual && key ? `${key}|pick:${textHash(pick!.join(','))}` : key;
+      const ids = req.selection?.sections.map((s) => s.id) ?? [];
+      const chars = req.selection?.chars ?? 0;
+      setPending({
+        title: '논문 분석 실행 확인',
+        estimate: estimate(model, [req.plan], cost),
+        notes: [
+          `근거: ${basis === 'fulltext' ? '원문 기반' : '초록 기반'} — ${req.scope}`,
+          m.analysis?.analyzedAt ? '이 논문의 기존 AI 분석은 새 결과로 바뀝니다. 나의 관점·연구 기록은 그대로입니다.' : '',
+        ].filter(Boolean),
+        // 장·절 인식 경고는 직접 선택할 때도 참고로 보여 준다
+        warnings: basis === 'fulltext' ? [...fullTextWarnings(m), ...(autoReq.selection?.warnings ?? [])] : [],
+        blocked: doc ? (!ids.length ? '보낼 원문 조각을 하나 이상 선택하세요.' : chars > budget ? `선택한 원문이 ${chars.toLocaleString()}자로 한도 ${budget.toLocaleString()}자를 넘습니다. 일부 조각을 해제하세요.` : undefined) : undefined,
+        picker: doc ? <SectionPicker doc={doc} ids={ids} autoIds={autoIds} budget={budget} sent={sectionsBlock(req.selection?.sections ?? [])} onChange={(next) => show(next)} /> : undefined,
+        run: () => execOne(m, req, doc, runKey),
+      });
+    };
+    show();
   }
 
   async function execOne(m: Material, req: PaperRequest, doc: FullTextDoc | undefined, key: string | null) {
@@ -653,13 +671,16 @@ export function Analysis() {
           settings={cost}
           notes={pending.notes}
           warnings={pending.warnings}
+          blocked={pending.blocked}
           onClose={() => setPending(null)}
           onConfirm={() => {
             const go = pending.run;
             setPending(null);
             void go();
           }}
-        />
+        >
+          {pending.picker}
+        </CostConfirm>
       )}
     </>
   );

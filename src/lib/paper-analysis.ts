@@ -7,7 +7,7 @@
  */
 import type { Analysis, AnalysisBasis, Material, Project } from '../types';
 import { bibAuthors } from './citation';
-import { estimateTokens, queryTerms, sectionsBlock, selectSections, textHash, verifyEvidence, type FullTextDoc, type Selection } from './fulltext';
+import { estimateTokens, manualSelection, queryTerms, sectionsBlock, selectSections, textHash, verifyEvidence, type FullTextDoc, type Selection } from './fulltext';
 import { usageCost, type CallPlan, type ModelPrice, type Usage } from './ai-cost';
 import { ANALYSIS_SYSTEM, PAPER_SCHEMA, briefText, materialBlock, type AnalysisBrief } from './prompts';
 
@@ -69,13 +69,18 @@ export interface PaperRequest {
   plan: CallPlan;
 }
 
-export function paperRequest(b: AnalysisBrief, p: Project, m: Material, basis: AnalysisBasis, doc?: FullTextDoc, budgetChars = PAPER_FULLTEXT_CHARS): PaperRequest {
+/** 원문 기반 자동 선택 결과의 조각 id (직접 선택 화면의 초기값) */
+export const autoSectionIds = (b: AnalysisBrief, doc: FullTextDoc, budgetChars = PAPER_FULLTEXT_CHARS) =>
+  selectSections(doc.sections, briefTerms(b), budgetChars).sections.map((s) => s.id);
+
+/** pickIds: 사용자가 직접 고른 조각 id — 주면 자동 선택 대신 이 조각만 보낸다 (확인창 표시와 같은 Selection으로 프롬프트를 만든다) */
+export function paperRequest(b: AnalysisBrief, p: Project, m: Material, basis: AnalysisBasis, doc?: FullTextDoc, budgetChars = PAPER_FULLTEXT_CHARS, pickIds?: string[]): PaperRequest {
   const head = briefText(b, p);
   let content: string;
   let scope: string;
   let selection: Selection | undefined;
   if (basis === 'fulltext' && doc) {
-    selection = selectSections(doc.sections, briefTerms(b), budgetChars);
+    selection = pickIds ? manualSelection(doc.sections, pickIds, budgetChars) : selectSections(doc.sections, briefTerms(b), budgetChars);
     scope = `${selection.scope} — PDF 전체가 아닌 선별 부분(최대 ${budgetChars.toLocaleString()}자)`;
     content = `${head}
 

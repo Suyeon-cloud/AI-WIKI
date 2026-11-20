@@ -804,3 +804,13 @@ input[type='radio'], input[type='checkbox'], input[type='range'] { width: auto; 
 .used-source pre { white-space: pre-wrap; max-height: 260px; overflow: auto; background: #faf9f6; padding: 8px; border-radius: var(--radius); font-size: 12px; }
 .evidence-list .paraphrase { margin: 4px 0; padding: 2px 10px; color: #555; font-style: italic; overflow-wrap: anywhere; }
 .warn-note { margin: 8px 0 0; color: #a35a00; }
+.section-picker { margin: 10px 0; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); }
+.section-picker .picker-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+.section-picker .picker-range { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.section-picker .picker-range input { width: 64px; }
+.section-picker .picker-list { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow: auto; border-top: 1px solid var(--line); }
+.section-picker .picker-list li { padding: 3px 0; border-bottom: 1px dashed var(--line); overflow-wrap: anywhere; }
+.section-picker .picker-list li.on { background: #f6f9f4; }
+.section-picker .picker-list label { cursor: pointer; }
+.section-picker .btn-link { background: none; border: 0; color: var(--accent, #2b6cb0); cursor: pointer; padding: 0 4px; }
+.section-picker .picker-text { white-space: pre-wrap; max-height: 220px; overflow: auto; background: #faf9f6; padding: 8px; border-radius: var(--radius); font-size: 12px; }

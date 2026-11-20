@@ -374,11 +374,33 @@ export function selectSections(sections: Section[], terms: string[], budgetChars
   // 검색어가 맞지 않아 예산이 남으면 결과·방법 부분을 문서 순서로 더 채운다
   for (const s of [...byRole('results'), ...byRole('method')]) take(s);
   const chosen = pool.filter((s) => picked.has(s.id));
-  const scope = chosen.length
-    ? `원문 ${total.toLocaleString()}자 중 ${used.toLocaleString()}자(${Math.round((used / (total || 1)) * 100)}%): ${chosen.map((s) => `[${ROLE_LABEL[roleOf(s)]}] ${s.title}(${pagesOf(s)})`).join(', ')}`
-    : '원문에서 분석 범위에 맞는 부분을 찾지 못함';
-  return { sections: chosen, chars: used, totalChars: total, scope, warnings: structureWarnings(sections) };
+  return { sections: chosen, chars: used, totalChars: total, scope: describeSelection(chosen, used, total), warnings: structureWarnings(sections) };
 }
+
+/** 보내는 조각의 사람이 읽는 설명 (자동·직접 선택 공통) */
+function describeSelection(chosen: Section[], used: number, total: number, prefix = ''): string {
+  return chosen.length
+    ? `${prefix}원문 ${total.toLocaleString()}자 중 ${used.toLocaleString()}자(${Math.round((used / (total || 1)) * 100)}%): ${chosen.map((s) => `[${ROLE_LABEL[roleOf(s)]}] ${s.title}(${pagesOf(s)})`).join(', ')}`
+    : '원문에서 분석 범위에 맞는 부분을 찾지 못함';
+}
+
+/**
+ * 사용자가 직접 고른 조각 (장·절 인식이 틀려도 쪽 범위·조각 단위로 고를 수 있게). 문서 순서로 정렬하고
+ * 모르는 id는 무시한다. 예산을 넘으면 잘라 보내지 않고 overBudget으로 알린다 (실행 화면에서 막음).
+ */
+export function manualSelection(sections: Section[], ids: string[], budgetChars: number): Selection & { overBudget: boolean } {
+  const want = new Set(ids);
+  const chosen = sections.filter((s) => want.has(s.id));
+  const used = chosen.reduce((n, s) => n + s.text.length, 0);
+  const total = sections.filter((s) => s.kind !== 'references').reduce((n, s) => n + s.text.length, 0);
+  const overBudget = used > budgetChars;
+  const warnings = overBudget ? [`직접 선택한 원문이 ${used.toLocaleString()}자로 한도 ${budgetChars.toLocaleString()}자를 넘습니다. 일부 조각을 해제하세요.`] : [];
+  return { sections: chosen, chars: used, totalChars: total, scope: describeSelection(chosen, used, total, '직접 선택 — '), warnings, overBudget };
+}
+
+/** 쪽 범위와 겹치는 조각 id (문서 순서) — 장·절 제목과 상관없이 실제 쪽 기준으로 고른다 */
+export const sectionsInPages = (sections: Section[], from: number, to: number): string[] =>
+  sections.filter((s) => s.pageTo >= Math.min(from, to) && s.pageFrom <= Math.max(from, to)).map((s) => s.id);
 
 /** AI에 보낼 원문 블록 (조각마다 장·절과 쪽 표시) */
 export const sectionsBlock = (ss: Section[]) =>
