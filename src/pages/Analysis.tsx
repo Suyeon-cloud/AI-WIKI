@@ -435,7 +435,7 @@ export function Analysis() {
         `근거: ${basis === 'fulltext' ? '원문 기반' : '초록 기반'} — ${req.scope}`,
         m.analysis?.analyzedAt ? '이 논문의 기존 AI 분석은 새 결과로 바뀝니다. 나의 관점·연구 기록은 그대로입니다.' : '',
       ].filter(Boolean),
-      warnings: basis === 'fulltext' ? fullTextWarnings(m) : [],
+      warnings: basis === 'fulltext' ? [...fullTextWarnings(m), ...(req.selection?.warnings ?? [])] : [],
       run: () => execOne(m, req, doc, key),
     });
   }

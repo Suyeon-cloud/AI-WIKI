@@ -16,7 +16,7 @@ export function fullTextWarnings(m: Material): string[] {
   const ft = m.fulltext;
   if (!ft) return [];
   const w: string[] = [];
-  if ((ft.extractorVersion ?? 1) < EXTRACTOR_VERSION) w.push('이전 추출 방식으로 등록된 원문입니다 (한글이 빠졌거나 깨졌을 수 있음). 다시 추출을 권합니다.');
+  if ((ft.extractorVersion ?? 1) < EXTRACTOR_VERSION) w.push('이전 추출 방식으로 등록된 원문입니다 (한글 누락·장·절과 쪽 범위 인식 오류가 있을 수 있음). 다시 추출을 권합니다.');
   if (ft.quality?.level === 'low') w.push(...ft.quality.reasons.map((r) => `추출 품질 낮음: ${r}`));
   return w;
 }

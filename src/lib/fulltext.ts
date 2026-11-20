@@ -25,8 +25,8 @@ export interface FullTextDoc {
   quality?: ExtractQuality;
 }
 
-/** 2: 한글 CID 글꼴 CMap 적용·조각 사이 띄어쓰기. 이보다 낮으면 다시 추출을 권한다 */
-export const EXTRACTOR_VERSION = 2;
+/** 2: 한글 CID 글꼴 CMap·띄어쓰기  3: 「제N장」 제목 인식·조각별 쪽 범위. 이보다 낮으면 다시 추출을 권한다 */
+export const EXTRACTOR_VERSION = 3;
 export interface ExtractQuality {
   level: 'good' | 'low';
   reasons: string[];
@@ -113,8 +113,10 @@ export function validDoc(x: unknown, materialId: string): FullTextDoc | undefine
 /* ───────── 장·절 분할 ───────── */
 
 const HEADING =
-  /^(?:제\s*\d+\s*[장절]\b.*|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4}\s*[.．]?\s*\S.*|[IVX]{1,4}\s*[.．]\s+\S.*|\d{1,2}\s*[.．]\s*[^\d\s.].*|\d{1,2}\.\d{1,2}\.?\s+\S.*|(?:국문\s*)?초\s*록|요\s*약|abstract|서\s*론|결\s*론(?:\s*및\s*제\s*언)?|참\s*고\s*문\s*헌|references|bibliography)$/i;
-const TOC_LINE = /(?:\.{3,}|…{2,}|·{3,}|\s{3,})\s*\d{1,3}\s*$/;
+  // '제1장 서론'·'제 2 절'·'제Ⅲ장': JS 정규식의 \b는 한글 뒤에서 성립하지 않으므로 쓰지 않는다 (조사가 붙으면 문장으로 봄)
+  /^(?:제\s*(?:\d{1,2}|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4})\s*[장절](?![에의을를은는이가과와도로])(?:\s*\S.*)?|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4}\s*[.．]?\s*\S.*|[IVX]{1,4}\s*[.．]\s+\S.*|\d{1,2}\s*[.．]\s*[^\d\s.].*|\d{1,2}\.\d{1,2}\.?\s+\S.*|(?:국문\s*)?초\s*록|요\s*약|abstract|서\s*론|결\s*론(?:\s*및\s*제\s*언)?|참\s*고\s*문\s*헌|references|bibliography)$/i;
+const CHAPTER = /^(?:제\s*(?:\d{1,2}|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4})\s*장|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4}\s*[.．]?\s*\S|[IVX]{1,4}\s*[.．]\s+\S)/;
+const TOC_LINE =/(?:\.{3,}|…{2,}|·{3,}|\s{3,})\s*\d{1,3}\s*$/;
 const kindOf = (title: string): SectionKind => {
   const t = title.replace(/\s+/g, '');
   if (/^(국문)?초록$|^요약$|^abstract$/i.test(t)) return 'abstract';
@@ -132,12 +134,18 @@ const isHeading = (line: string) => {
 
 /** 쪽별 텍스트 → 장·절 목록 (제목 앞부분은 'front'). 한 절이 maxChars를 넘으면 나눠 '(2/3)'을 붙인다 */
 export function splitSections(pages: string[], maxChars = 6000): Section[] {
-  const raw: { title: string; pageFrom: number; pageTo: number; lines: string[] }[] = [];
-  let cur = { title: '앞부분', pageFrom: 1, pageTo: 1, lines: [] as string[] };
+  type Line = { t: string; p: number };
+  const raw: { title: string; pageFrom: number; pageTo: number; lines: Line[] }[] = [];
+  let cur = { title: '앞부분', pageFrom: 1, pageTo: 1, lines: [] as Line[] };
+  const flat = (t: string) => t.replace(/\s+/g, '');
+  let chapter = ''; // 현재 장 제목 (제N장·Ⅰ. 등)
   pages.forEach((page, pi) => {
     for (const line of page.split(/\r?\n/)) {
+      // 쪽마다 반복되는 머리글(현재 장·절 제목과 같은 줄)은 새 절로 보지 않고 버린다
+      if (isHeading(line) && cur.title !== '앞부분' && [chapter, ...cur.title.split(' · ')].some((t) => t && flat(t) === flat(line))) continue;
+      if (isHeading(line) && CHAPTER.test(line.trim())) chapter = line.trim();
       if (isHeading(line)) {
-        if (cur.lines.join('').trim()) {
+        if (cur.lines.some((l) => l.t.trim())) {
           // 내용이 있으면 앞 절을 닫는다
           raw.push(cur);
           cur = { title: line.trim(), pageFrom: pi + 1, pageTo: pi + 1, lines: [] };
@@ -149,20 +157,45 @@ export function splitSections(pages: string[], maxChars = 6000): Section[] {
           cur.pageTo = pi + 1;
         }
       } else {
-        cur.lines.push(line);
+        cur.lines.push({ t: line, p: pi + 1 });
         cur.pageTo = pi + 1;
       }
     }
   });
   raw.push(cur);
   const out: Section[] = [];
+  const tidy = (ls: Line[]) => ls.map((l) => l.t).join('\n').replace(/\n{3,}/g, '\n\n').trim();
   for (const r of raw) {
-    const text = r.lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-    if (!text) continue;
+    if (!tidy(r.lines)) continue;
     const kind = r.title === '앞부분' ? 'front' : kindOf(r.title);
-    const parts = chunkText(text, maxChars);
+    // 줄 단위로 나눠 조각마다 실제 쪽 범위를 기록한다 (긴 절의 모든 조각이 절 전체 쪽 범위를 갖지 않도록)
+    const parts: { text: string; from: number; to: number }[] = [];
+    let buf: Line[] = [];
+    let len = 0;
+    const flush = () => {
+      const text = tidy(buf);
+      if (text) {
+        const ps = buf.filter((l) => l.t.trim()).map((l) => l.p);
+        parts.push({ text, from: ps[0] ?? r.pageFrom, to: ps[ps.length - 1] ?? r.pageTo });
+      }
+      buf = [];
+      len = 0;
+    };
+    for (const l of r.lines) {
+      if (l.t.length > maxChars) {
+        flush();
+        for (const piece of chunkText(l.t, maxChars)) parts.push({ text: piece, from: l.p, to: l.p });
+        continue;
+      }
+      if (len && len + l.t.length + 1 > maxChars) flush();
+      buf.push(l);
+      len += l.t.length + 1;
+    }
+    flush();
+    // 제목 줄이 있는 쪽부터 시작하도록 (절 첫 조각)
+    if (parts[0]) parts[0].from = Math.min(parts[0].from, r.pageFrom);
     parts.forEach((p, i) =>
-      out.push({ id: `s${out.length + 1}`, title: parts.length > 1 ? `${r.title} (${i + 1}/${parts.length})` : r.title, kind, pageFrom: r.pageFrom, pageTo: r.pageTo, text: p }),
+      out.push({ id: `s${out.length + 1}`, title: parts.length > 1 ? `${r.title} (${i + 1}/${parts.length})` : r.title, kind, pageFrom: p.from, pageTo: p.to, text: p.text }),
     );
   }
   return out;
@@ -222,38 +255,90 @@ export interface Selection {
   sections: Section[];
   chars: number;
   totalChars: number;
-  /** 사람이 읽는 분석 범위 설명 */
+  /** 사람이 읽는 분석 범위 설명 (실제로 보내는 조각의 역할·제목·쪽) */
   scope: string;
+  /** 장·절 인식이 불확실하거나 필요한 부분을 찾지 못했을 때의 경고 (추측해서 채우지 않음) */
+  warnings: string[];
+}
+
+/** 분석에서 챙길 부분: 제목(장 제목 포함)으로만 판단한다 */
+export type SectionRole = 'abstract' | 'intro' | 'method' | 'results' | 'conclusion' | 'limits' | 'front' | 'other';
+export const ROLE_LABEL: Record<SectionRole, string> = { abstract: '초록', intro: '서론', method: '연구방법', results: '핵심 분석·결과', conclusion: '결론', limits: '한계', front: '앞부분', other: '본문' };
+export function roleOf(s: Section): SectionRole {
+  if (s.kind === 'front' || s.kind === 'abstract') return s.kind;
+  const t = s.title.replace(/\s+|\(\d+\/\d+\)$/g, '').toLowerCase();
+  if (/한계|limitation/.test(t) && !/결론/.test(t)) return 'limits';
+  if (s.kind === 'conclusion') return 'conclusion';
+  if (/연구방법|방법론|연구설계|연구절차|연구대상|연구도구|분석방법|분석틀|자료수집|자료분석|method|design|procedure/.test(t)) return 'method';
+  if (/결과|분석|논의|고찰|사례|실험|검증|findings|results|discussion|analysis/.test(t)) return 'results';
+  if (s.kind === 'intro') return 'intro';
+  return 'other';
+}
+
+const pagesOf = (s: Section) => `p.${s.pageFrom}${s.pageTo !== s.pageFrom ? `-${s.pageTo}` : ''}`;
+
+/** 장·절 인식 상태 점검: 제목 없이 남은 앞부분이 크거나, 필요한 부분의 제목을 못 찾으면 경고 */
+export function structureWarnings(sections: Section[]): string[] {
+  const pool = sections.filter((s) => s.kind !== 'references');
+  const total = pool.reduce((n, s) => n + s.text.length, 0) || 1;
+  const front = pool.filter((s) => s.kind === 'front');
+  const frontChars = front.reduce((n, s) => n + s.text.length, 0);
+  const w: string[] = [];
+  const titled = new Set(pool.filter((s) => s.kind !== 'front').map((s) => s.title.replace(/ \(\d+\/\d+\)$/, ''))).size;
+  if (titled < 2) w.push('장·절 제목을 거의 인식하지 못했습니다. 자동 선택은 검색어에만 의존하므로 필요한 부분이 빠질 수 있습니다.');
+  else if (front.length > 1 && frontChars / total > 0.25)
+    w.push(`장·절 제목 없이 인식된 앞부분이 큽니다 (${pagesOf({ ...front[0], pageTo: front[front.length - 1].pageTo })}, 원문의 ${Math.round((frontChars / total) * 100)}%). 이 구간의 장·절 구분은 인식하지 못했습니다.`);
+  const roles = new Set(pool.map(roleOf));
+  const missing = (['method', 'results', 'conclusion'] as const).filter((r) => !roles.has(r)).map((r) => ROLE_LABEL[r]);
+  if (titled >= 2 && missing.length) w.push(`장·절 제목에서 ${missing.join('·')} 부분을 찾지 못해 그 부분은 따로 넣지 않았습니다 (추측하지 않음).`);
+  return w;
 }
 
 /**
- * 예산(글자 수) 안에서 분석에 보낼 조각을 고른다.
- * 초록·서론 첫 조각·결론을 먼저 넣고, 남은 예산은 검색어 점수 순서. 참고문헌은 제외. 결과는 문서 순서.
+ * 예산(글자 수) 안에서 분석에 보낼 조각을 고른다. 참고문헌은 제외, 결과는 문서 순서.
+ * 1) 초록·연구방법·핵심 분석·결과·결론·한계에서 한 조각씩(검색어 점수가 높은 조각, 조각당 예산의 30% 이하)
+ * 2) 서론 첫 조각  3) 남은 예산은 검색어 점수 순 (제목 없는 앞부분은 장·절을 못 찾았을 때만)
  */
 export function selectSections(sections: Section[], terms: string[], budgetChars: number): Selection {
   const pool = sections.filter((s) => s.kind !== 'references');
   const total = pool.reduce((n, s) => n + s.text.length, 0);
   const score = scoreSections(pool, terms);
+  const sc = (s: Section) => score.get(s.id) ?? 0;
   const picked = new Set<string>();
   let used = 0;
   const take = (s: Section | undefined, cap = budgetChars) => {
-    if (!s || picked.has(s.id) || s.text.length > cap || used + s.text.length > budgetChars) return;
+    if (!s || picked.has(s.id) || s.text.length > cap || used + s.text.length > budgetChars) return false;
     picked.add(s.id);
     used += s.text.length;
+    return true;
   };
-  take(pool.find((s) => s.kind === 'abstract'));
-  take(pool.find((s) => s.kind === 'intro'), budgetChars * 0.3);
-  const concl = pool.filter((s) => s.kind === 'conclusion');
-  take(concl[concl.length - 1], budgetChars * 0.3);
-  for (const s of [...pool].sort((a, b) => (score.get(b.id) ?? 0) - (score.get(a.id) ?? 0))) {
-    if ((score.get(s.id) ?? 0) <= 0) break;
+  const byRole = (r: SectionRole) => pool.filter((s) => roleOf(s) === r);
+  const best = (ss: Section[], cap: number) => {
+    // 점수 높은 순, 같으면 문서 순서. 예산에 맞는 첫 조각을 넣는다
+    for (const s of [...ss].sort((a, b) => sc(b) - sc(a))) if (take(s, cap)) return;
+  };
+  const cap = budgetChars * 0.3;
+  const structured = pool.some((s) => s.kind !== 'front');
+  take(byRole('abstract')[0]);
+  if (!byRole('abstract').length) take(byRole('front')[0], budgetChars * 0.15); // 초록 제목이 없으면 첫 부분(서지·초록일 가능성)만 조금
+  best(byRole('method'), cap);
+  best(byRole('results'), cap);
+  const concl = byRole('conclusion');
+  if (concl.length) take(concl[concl.length - 1], cap) || best(concl, cap);
+  best(byRole('limits'), cap);
+  take(byRole('intro')[0], budgetChars * 0.2);
+  for (const s of [...pool].sort((a, b) => sc(b) - sc(a))) {
+    if (sc(s) <= 0) break;
+    if (structured && s.kind === 'front') continue;
     take(s);
   }
+  // 검색어가 맞지 않아 예산이 남으면 결과·방법 부분을 문서 순서로 더 채운다
+  for (const s of [...byRole('results'), ...byRole('method')]) take(s);
   const chosen = pool.filter((s) => picked.has(s.id));
   const scope = chosen.length
-    ? `원문 ${total.toLocaleString()}자 중 ${used.toLocaleString()}자(${Math.round((used / (total || 1)) * 100)}%): ${chosen.map((s) => `${s.title}(p.${s.pageFrom}${s.pageTo !== s.pageFrom ? `-${s.pageTo}` : ''})`).join(', ')}`
+    ? `원문 ${total.toLocaleString()}자 중 ${used.toLocaleString()}자(${Math.round((used / (total || 1)) * 100)}%): ${chosen.map((s) => `[${ROLE_LABEL[roleOf(s)]}] ${s.title}(${pagesOf(s)})`).join(', ')}`
     : '원문에서 분석 범위에 맞는 부분을 찾지 못함';
-  return { sections: chosen, chars: used, totalChars: total, scope };
+  return { sections: chosen, chars: used, totalChars: total, scope, warnings: structureWarnings(sections) };
 }
 
 /** AI에 보낼 원문 블록 (조각마다 장·절과 쪽 표시) */

@@ -25,7 +25,7 @@ import { clipAbstract, clipYear, defaultEnrichFields, enrichPatch, planEnrichmen
 import { matchBibQuery, matchRefType } from '../src/lib/bib-search';
 import { TranscriptError, buildTranscriptNote, dedupeCues, formatTime, groupSegments, parseVtt, pickTrack, ytdlpError, type YtInfo } from '../src/lib/yt-transcript';
 import { joinItems } from '../src/lib/pdf-text';
-import { assessQuality, buildFullText, docHash, evidenceMarkdown, evidenceMatch, estimateTokens, fullTextMeta, queryTerms, sectionsBlock, selectSections, validDoc, verifyEvidence } from '../src/lib/fulltext';
+import { assessQuality, buildFullText, docHash, evidenceMarkdown, evidenceMatch, roleOf, structureWarnings, estimateTokens, fullTextMeta, queryTerms, sectionsBlock, selectSections, validDoc, verifyEvidence } from '../src/lib/fulltext';
 import { costUsd, estimate, normCost, usageCost } from '../src/lib/ai-cost';
 import { thesisContext } from '../src/lib/prompts';
 import { PAPER_MAX_TOKENS, cacheHit, collectionRequest, compactBlock, finishPaper, paperCacheKey, paperRequest, writingEvidence } from '../src/lib/paper-analysis';
@@ -1297,7 +1297,7 @@ async function fulltextTests() {
   ok(assessQuality(['��� 가나다라 '.repeat(60)], true).reasons.some((r) => r.includes('깨진 글자')), '대체 문자가 많으면 깨진 글자 경고');
   eq(assessQuality(['Motion graphics study. '.repeat(30)], false).level, 'good', '영문 논문은 한글 비율로 경고하지 않음');
   const kdoc = buildFullText('kq', 'k.pdf', ['Ⅰ. 서론\n생성형 AI는 영상 제작 공정의 효율성을\n높이며 시간과 비용을 절감한다.', 'Ⅱ. 결론\n하이브리드 방식은 작업 시간을 약 70% 단축하면서도 형태 왜곡을 1/10로 줄였다. 실무 적용성이 확인되었다.'], 2, new Date(), { expectHangul: true });
-  eq([kdoc.extractorVersion, fullTextMeta(kdoc, false).extractorVersion, fullTextMeta(kdoc, false).quality?.level], [2, 2, 'low'], '추출 방식 버전·품질을 원문 정보에 기록 (짧은 원문은 품질 낮음)');
+  eq([kdoc.extractorVersion, fullTextMeta(kdoc, false).extractorVersion, fullTextMeta(kdoc, false).quality?.level], [3, 3, 'low'], '추출 방식 버전·품질을 원문 정보에 기록 (짧은 원문은 품질 낮음)');
   const v = verifyEvidence([
     { section: 'Ⅰ', quote: '영상 제작 공정의 효율성을 높이며', point: '' },
     { section: 'Ⅱ', quote: '작업 시간을 약 70％ 단축하면서도', point: '' },
@@ -1313,7 +1313,7 @@ async function fulltextTests() {
   const fa = finishPaper({ data: { summary: 's', topic: '', keywords: [], relevance: 3, rationale: '', connection: '', insights: [], method: '', findings: '', limitations: '', usageIdea: '' }, basis: 'fulltext', doc: kdoc, scope: 'x', model: 'claude-haiku-5-5', cacheKey: null, sectionIds: ['s1', 's2'] });
   eq(fa.sources, { hash: kdoc.hash, sectionIds: ['s1', 's2'] }, '분석에 보낸 원문 절을 원문 해시와 함께 기록');
   const nm = normalizeMaterial(JSON.parse(JSON.stringify({ id: 'kq', title: '가상', analysis: fa, fulltext: fullTextMeta(kdoc, false) })), 'kq')!;
-  eq([nm.analysis?.sources?.sectionIds.length, nm.fulltext?.extractorVersion, nm.fulltext?.quality?.level], [2, 2, 'low'], '저장 후에도 원문 절·추출 버전·품질 유지');
+  eq([nm.analysis?.sources?.sectionIds.length, nm.fulltext?.extractorVersion, nm.fulltext?.quality?.level], [2, 3, 'low'], '저장 후에도 원문 절·추출 버전·품질 유지');
   eq(normalizeMaterial({ id: 'old', title: 'x', fulltext: { hash: 'h1', fileName: 'a.pdf', pages: 1, chars: 1, sections: 1, savedAt: '2026-11-20T00:00:00Z', cloud: false } }, 'old')?.fulltext?.extractorVersion, undefined, '이전에 등록한 원문은 추출 버전 없음 → 다시 추출 권장 대상');
   const mm = verifyEvidence([
     { section: 'Ⅱ', quote: '작업 시간을 약 70% 단축하면서도 형태 왜곡을 1/10로 줄였다', point: '' },
@@ -1329,6 +1329,40 @@ async function fulltextTests() {
   const keep = normalizeMaterial(JSON.parse(JSON.stringify({ id: 'kq', title: '가상', analysis: { ...fa, evidence: mm } })), 'kq')!.analysis!.evidence!;
   eq(keep.map((e) => evidenceMatch(e)), ['exact', 'similar', 'none'], '저장 후에도 일치 수준 유지');
   eq(normalizeMaterial(JSON.parse(JSON.stringify({ id: 'kq', title: '가상', analysis: { ...fa, evidence: [{ section: 'x', quote: 'q', verified: false, match: 'exact' }] } })), 'kq')!.analysis!.evidence!.map((e) => evidenceMatch(e)), ['none'], '저장된 값이 match=exact라도 verified가 아니면 원문 확인으로 보지 않음');
+  section('17-5. 학위논문 장·절 인식 · 균형 선택 (가상 학위논문형 문서)');
+  const body = (w: string) => `${w} 관련 가상 본문 문장입니다. `.repeat(70);
+  const chap: [number, string, string][] = [[6, '제1장 서론', '배경'], [10, '제2장 이론적 배경', '이론'], [30, '제3장 연구 방법', '방법'], [36, '제4장 분석 결과', '결과'], [56, '제5장 결론 및 제언', '결론']];
+  const thesis: string[] = [];
+  for (let p = 1; p <= 60; p++) {
+    if (p <= 3) thesis.push(p === 3 ? '목 차\n제1장 서론 ········ 1\n제3장 연구 방법 ········ 40' : '가상 학위논문 표지와 감사의 글');
+    else if (p <= 5) thesis.push((p === 4 ? '국문초록\n' : '') + body('초록'));
+    else if (p === 58) thesis.push(`2. 연구의 한계\n${body('한계')}`);
+    else {
+      const c = [...chap].reverse().find(([from]) => p >= from)!;
+      const name = p === 59 || p === 60 ? '부록 제외' : c[2];
+      thesis.push(`${c[1]}\n${body(name)}`); // 장 첫 쪽은 제목, 이후 쪽은 머리글로 같은 장 제목이 반복됨
+    }
+  }
+  const td = buildFullText('th', 'thesis.pdf', thesis, 60, new Date(), { expectHangul: true });
+  const tTitles = [...new Set(td.sections.map((x) => x.title.replace(/ \(\d+\/\d+\)$/, '')))];
+  eq(tTitles, ['앞부분', '국문초록', '제1장 서론', '제2장 이론적 배경', '제3장 연구 방법', '제4장 분석 결과', '제5장 결론 및 제언', '2. 연구의 한계'], '「제N장」 제목 인식, 쪽마다 반복되는 장 제목 머리글(하위 절 뒤 포함)은 새 절로 보지 않음, 목차 줄 제외');
+  const theo = td.sections.filter((x) => x.title.startsWith('제2장'));
+  ok(theo.length > 1 && theo[0].pageFrom === 10 && theo[theo.length - 1].pageTo === 29 && new Set(theo.map((x) => x.pageFrom)).size === theo.length && theo.every((x, i) => i === 0 || x.pageFrom >= theo[i - 1].pageTo), '긴 장을 나눈 조각마다 실제 쪽 범위 (모두 같은 범위가 아님)');
+  eq(['제3장 연구 방법', '제4장 분석 결과', '제5장 결론 및 제언', '2. 연구의 한계', '국문초록'].map((t) => roleOf(td.sections.find((x) => x.title.startsWith(t))!)), ['method', 'results', 'conclusion', 'limits', 'abstract'], '절 역할 분류 (연구방법·결과·결론·한계·초록)');
+  const ts = selectSections(td.sections, queryTerms('이론'), 24000);
+  const roles = new Set<string>(ts.sections.map(roleOf));
+  ok(ts.chars <= 24000 && ['abstract', 'method', 'results', 'conclusion', 'limits'].every((r) => roles.has(r)), '24,000자 안에서 초록·연구방법·결과·결론·한계를 모두 포함 (검색어가 이론에 몰려도)');
+  ok(!ts.sections.some((x) => x.kind === 'front') && ts.sections.some((x) => x.pageFrom >= 36), '제목 없는 앞부분(표지·목차)은 넣지 않고, 뒷부분 장도 포함');
+  ok(/\[연구방법\] 제3장 연구 방법(?: \(\d+\/\d+\))?\(p\.3\d/.test(ts.scope) && /\[한계\] 2\. 연구의 한계\(p\.58/.test(ts.scope), '확인창 범위 설명에 실제로 보내는 조각의 역할·제목·쪽 표시');
+  eq(ts.warnings, [], '장·절을 잘 인식하면 경고 없음');
+  const flat = buildFullText('fl', 'flat.pdf', Array.from({ length: 30 }, (_, i) => body(`쪽${i}`)), 30);
+  const fs1 = selectSections(flat.sections, ['쪽3'], 24000);
+  ok(fs1.warnings.some((w) => w.includes('장·절 제목을 거의 인식하지 못했습니다')) && fs1.chars <= 24000, '장·절 인식 실패 → 경고 (검색어 기준 선택만)');
+  ok(new Set(flat.sections.map((x) => x.pageFrom)).size > 1, '제목이 없어도 조각별 쪽 범위는 실제 쪽');
+  const nometh = buildFullText('nm', 'n.pdf', ['Ⅰ. 서론\n' + body('a'), 'Ⅱ. 이론\n' + body('b'), 'Ⅲ. 맺음말\n' + body('c')], 3);
+  ok(selectSections(nometh.sections, [], 24000).warnings.some((w) => w.includes('연구방법·핵심 분석·결과 부분을 찾지 못해') && w.includes('추측하지 않음')), '연구방법·결과 절을 못 찾으면 추측하지 않고 경고');
+  ok(structureWarnings([{ id: 's1', title: '앞부분', kind: 'front', pageFrom: 1, pageTo: 50, text: 'x'.repeat(9000) }, { id: 's2', title: '앞부분 (2/2)', kind: 'front', pageFrom: 50, pageTo: 100, text: 'x'.repeat(9000) }, { id: 's3', title: '1. 서론', kind: 'intro', pageFrom: 101, pageTo: 102, text: 'y'.repeat(2000) }, { id: 's4', title: '2. 결과', kind: 'body', pageFrom: 103, pageTo: 104, text: 'y'.repeat(2000) }]).some((w) => w.includes('p.1-100') && w.includes('앞부분이 큽니다')), '제목 없는 앞부분이 크면 쪽 범위와 함께 경고');
+
 }
 
 (async () => {
