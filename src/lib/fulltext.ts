@@ -25,8 +25,8 @@ export interface FullTextDoc {
   quality?: ExtractQuality;
 }
 
-/** 2: 한글 CID 글꼴 CMap·띄어쓰기  3: 「제N장」 제목 인식·조각별 쪽 범위. 이보다 낮으면 다시 추출을 권한다 */
-export const EXTRACTOR_VERSION = 3;
+/** 2: 한글 CID 글꼴 CMap·띄어쓰기  3: 「제N장」·조각별 쪽 범위  4: 줄 안 조각을 x좌표 순으로(번호 뒤바뀜 방지)·다단계 번호 절. 이보다 낮으면 다시 추출을 권한다 */
+export const EXTRACTOR_VERSION = 4;
 export interface ExtractQuality {
   level: 'good' | 'low';
   reasons: string[];
@@ -114,22 +114,45 @@ export function validDoc(x: unknown, materialId: string): FullTextDoc | undefine
 
 const HEADING =
   // '제1장 서론'·'제 2 절'·'제Ⅲ장': JS 정규식의 \b는 한글 뒤에서 성립하지 않으므로 쓰지 않는다 (조사가 붙으면 문장으로 봄)
-  /^(?:제\s*(?:\d{1,2}|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4})\s*[장절](?![에의을를은는이가과와도로])(?:\s*\S.*)?|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4}\s*[.．]?\s*\S.*|[IVX]{1,4}\s*[.．]\s+\S.*|\d{1,2}\s*[.．]\s*[^\d\s.].*|\d{1,2}\.\d{1,2}\.?\s+\S.*|(?:국문\s*)?초\s*록|요\s*약|abstract|서\s*론|결\s*론(?:\s*및\s*제\s*언)?|참\s*고\s*문\s*헌|references|bibliography)$/i;
+  // 다단계 번호(1.1. · 1.4.1. · 1.5.1.2.)는 뒤에 조사가 오면('2.1.2 에서 …') 본문 문장으로 본다
+  /^(?:제\s*(?:\d{1,2}|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4})\s*[장절](?![에의을를은는이가과와도로])(?:\s*\S.*)?|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4}\s*[.．]?\s*\S.*|[IVX]{1,4}\s*[.．]\s+\S.*|\d{1,2}(?:\.\d{1,2}){1,3}\.?\s+(?![에의와과로를을은는이가도](?:\s|서|부터|까지|$))\S.*|(?:국문\s*)?초\s*록|요\s*약|abstract|서\s*론|결\s*론(?:\s*및\s*제\s*언)?|참\s*고\s*문\s*헌|references|bibliography)$/i;
+/** 한 단계 번호('1. 서론'): 「제N장」을 쓰는 문서에서는 본문 목록 번호이므로 제목으로 보지 않는다 */
+const SINGLE_NUM = /^\d{1,2}\s*[.．]\s*[^\d\s.].*$/;
 const CHAPTER = /^(?:제\s*(?:\d{1,2}|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4})\s*장|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4}\s*[.．]?\s*\S|[IVX]{1,4}\s*[.．]\s+\S)/;
-const TOC_LINE =/(?:\.{3,}|…{2,}|·{3,}|\s{3,})\s*\d{1,3}\s*$/;
+// 목차 줄: 점선(…… · ····) 뒤에 쪽 번호나 깨진 글자 몇 자, 또는 넓은 공백 뒤 쪽 번호
+const TOC_LINE = /(?:\.{4,}|…{2,}|·{4,}|[.·…]{2,}\s*\S{0,6}\s*$|\s{3,}\d{1,3}\s*$)/;
+/**
+ * 「제 장」의 숫자가 따로 기록되어 '제 장2 AI 이미지 큐레이션 전략'·'제 장 서론1'처럼 추출된 줄 → '제2장 …'.
+ * '제 장에서는 …'·'제 장부터 제 장까지' 같은 본문 문장(숫자가 0개·2개 이상이거나 조사로 이어짐)은 그대로 둔다.
+ */
+export function fixChapterLine(line: string): string {
+  const m = /^\s*제\s*장\s*(\d{1,2})?\s*(.*?)\s*$/.exec(line);
+  if (!m || /^[에의을를은는이가과와도로부까]/.test(m[2])) return line;
+  const tail = /^(.*?\S)\s*(\d{1,2})$/.exec(m[2]);
+  const num = m[1] ?? tail?.[2];
+  const title = m[1] ? m[2] : tail?.[1];
+  if (!num || !title || (m[1] && tail)) return line;
+  return `제${num}장 ${title}`;
+}
+/** 괄호로 감싼 초록 제목 (공백 제거 후): 【中文摘要】 · [국문초록] · (Abstract) · 中文摘要 */
+const ABSTRACT_ALT = /^(?:[【\[(〔]\s*(?:중문|국문|영문)?(?:초록|요약|abstract|中文摘要|摘要|内容摘要)\s*[】\])〕]|中文摘要|内容摘要|摘要)$/i;
+const hanOverHangul =(l: string) => (l.match(/[㐀-鿿]/g) ?? []).length > (l.match(/[가-힣]/g) ?? []).length;
 const kindOf = (title: string): SectionKind => {
   const t = title.replace(/\s+/g, '');
-  if (/^(국문)?초록$|^요약$|^abstract$/i.test(t)) return 'abstract';
+  if (/^(국문)?초록$|^요약$|^abstract$/i.test(t) || ABSTRACT_ALT.test(t)) return 'abstract';
   if (/참고문헌|references|bibliography/i.test(t)) return 'references';
-  if (/서론|들어가며|introduction|머리말|^\d\.?연구(의)?배경|문제제기/i.test(t)) return 'intro';
+  if (/서론|들어가며|introduction|머리말|^\d\.(?:\d\.?)?연구(의)?배경|^\d\.?연구(의)?배경|문제제기/i.test(t)) return 'intro';
   if (/결론|맺음말|나가며|conclusion|제언/i.test(t)) return 'conclusion';
   return 'body';
 };
-const isHeading = (line: string) => {
+const isHeadingIn = (line: string, singleLevel: boolean) => {
   const l = line.trim();
-  if (l.length < 2 || l.length > 60 || TOC_LINE.test(l)) return false;
+  if (l.length < 2 || l.length > 80 || TOC_LINE.test(l)) return false;
   if (/[다요음함]\s*[.。]$/.test(l)) return false; // 문장으로 끝나면 제목이 아님
-  return HEADING.test(l);
+  if (ABSTRACT_ALT.test(l.replace(/\s+/g, ''))) return true; // 【中文摘要】·[Abstract] 같은 다국어 초록 제목
+  if (hanOverHangul(l)) return false; // 중국어 예문·인용 ('8. 使用普通…')
+  if (!singleLevel && SINGLE_NUM.test(l)) return false;
+  return HEADING.test(l) || (singleLevel && SINGLE_NUM.test(l));
 };
 
 /** 쪽별 텍스트 → 장·절 목록 (제목 앞부분은 'front'). 한 절이 maxChars를 넘으면 나눠 '(2/3)'을 붙인다 */
@@ -139,8 +162,12 @@ export function splitSections(pages: string[], maxChars = 6000): Section[] {
   let cur = { title: '앞부분', pageFrom: 1, pageTo: 1, lines: [] as Line[] };
   const flat = (t: string) => t.replace(/\s+/g, '');
   let chapter = ''; // 현재 장 제목 (제N장·Ⅰ. 등)
-  pages.forEach((page, pi) => {
-    for (const line of page.split(/\r?\n/)) {
+  const fixed = pages.map((p) => p.split(/\r?\n/).map(fixChapterLine));
+  // 「제N장」 제목이 둘 이상이면 장은 「제N장」, 절은 '1.1.'로 쓰는 문서 → 한 단계 번호('8. …')는 본문 목록
+  const singleLevel = fixed.flat().filter((l) => /^제\d{1,2}장\s/.test(l) && !TOC_LINE.test(l)).length < 2;
+  const isHeading = (l: string) => isHeadingIn(l, singleLevel);
+  fixed.forEach((lines, pi) => {
+    for (const line of lines) {
       // 쪽마다 반복되는 머리글(현재 장·절 제목과 같은 줄)은 새 절로 보지 않고 버린다
       if (isHeading(line) && cur.title !== '앞부분' && [chapter, ...cur.title.split(' · ')].some((t) => t && flat(t) === flat(line))) continue;
       if (isHeading(line) && CHAPTER.test(line.trim())) chapter = line.trim();
@@ -165,9 +192,13 @@ export function splitSections(pages: string[], maxChars = 6000): Section[] {
   raw.push(cur);
   const out: Section[] = [];
   const tidy = (ls: Line[]) => ls.map((l) => l.t).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  let chapterKind: SectionKind = 'body';
   for (const r of raw) {
+    if (CHAPTER.test(r.title)) chapterKind = kindOf(r.title);
     if (!tidy(r.lines)) continue;
-    const kind = r.title === '앞부분' ? 'front' : kindOf(r.title);
+    // 서론·결론 장 안의 번호 절('6.3. 연구의 한계점')은 장의 종류를 물려받는다
+    const own: SectionKind = r.title === '앞부분' ? 'front' : kindOf(r.title);
+    const kind: SectionKind = own === 'body' && /^\d/.test(r.title) && (chapterKind === 'intro' || chapterKind === 'conclusion') ? chapterKind : own;
     // 줄 단위로 나눠 조각마다 실제 쪽 범위를 기록한다 (긴 절의 모든 조각이 절 전체 쪽 범위를 갖지 않도록)
     const parts: { text: string; from: number; to: number }[] = [];
     let buf: Line[] = [];
@@ -267,9 +298,10 @@ export const ROLE_LABEL: Record<SectionRole, string> = { abstract: '초록', int
 export function roleOf(s: Section): SectionRole {
   if (s.kind === 'front' || s.kind === 'abstract') return s.kind;
   const t = s.title.replace(/\s+|\(\d+\/\d+\)$/g, '').toLowerCase();
-  if (/한계|limitation/.test(t) && !/결론/.test(t)) return 'limits';
+  // 연구의 한계: '연구의 한계(점)'·'한계점'·'제한점', 또는 결론 장 안의 '한계' 절 ('…시스템의 한계와 통합의 필요성' 같은 본문 절은 제외)
+  if ((/연구의한계|한계점|제한점|limitation/.test(t) || (s.kind === 'conclusion' && /한계/.test(t))) && !/결론/.test(t)) return 'limits';
   if (s.kind === 'conclusion') return 'conclusion';
-  if (/연구방법|방법론|연구설계|연구절차|연구대상|연구도구|분석방법|분석틀|자료수집|자료분석|method|design|procedure/.test(t)) return 'method';
+  if (/연구방법|연구.{0,6}방법|방법론|연구설계|연구절차|연구대상|연구도구|분석방법|분석틀|자료수집|자료분석|method|design|procedure/.test(t)) return 'method';
   if (/결과|분석|논의|고찰|사례|실험|검증|findings|results|discussion|analysis/.test(t)) return 'results';
   if (s.kind === 'intro') return 'intro';
   return 'other';
@@ -320,7 +352,8 @@ export function selectSections(sections: Section[], terms: string[], budgetChars
   const cap = budgetChars * 0.3;
   const structured = pool.some((s) => s.kind !== 'front');
   take(byRole('abstract')[0]);
-  if (!byRole('abstract').length) take(byRole('front')[0], budgetChars * 0.15); // 초록 제목이 없으면 첫 부분(서지·초록일 가능성)만 조금
+  // 초록 제목이 없고 장·절도 못 찾은 문서만 첫 부분(서지·초록일 가능성)을 조금 넣는다 (학위논문 표지·목차는 넣지 않음)
+  if (!byRole('abstract').length && !structured) take(byRole('front')[0], budgetChars * 0.15);
   best(byRole('method'), cap);
   best(byRole('results'), cap);
   const concl = byRole('conclusion');
