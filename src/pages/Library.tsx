@@ -7,6 +7,7 @@ import { DriveError } from '../lib/drive';
 import { sendToDrive, sendToObsidian } from '../lib/sync';
 import { Card, Empty, MaterialType, Modal, PageHeader, Relevance, StatusBadge } from '../components/ui';
 import { ImportExport } from '../components/ImportExport';
+import { FullTextPanel } from '../components/FullTextPanel';
 import { useNav } from '../components/ProjectDialog';
 import { useConnections } from '../components/Sidebar';
 import { RelevancePick, RelevanceStatus, useAiRelevance } from '../components/RelevancePick';
@@ -490,7 +491,15 @@ export function Library() {
             </Card>
 
             <div className="lib-side">
-              {selected ? <Detail m={selected} /> : <Card title="자료 상세"><Empty>목록에서 자료를 선택하세요.</Empty></Card>}
+              {selected ? (
+                <>
+                  <Detail m={selected} />
+                  {/* 논문 PDF 원문 등록 (원문 기반 AI 분석용) */}
+                  <FullTextPanel m={selected} />
+                </>
+              ) : (
+                <Card title="자료 상세"><Empty>목록에서 자료를 선택하세요.</Empty></Card>
+              )}
               <ImportExport selected={selected} />
               <p className="muted small"><StatusBadge s="local" /> 체크박스로 여러 자료를 골라 폴더 이동·Obsidian/Drive 보내기를 할 수 있습니다.</p>
             </div>
