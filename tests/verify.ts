@@ -25,7 +25,7 @@ import { clipAbstract, clipYear, defaultEnrichFields, enrichPatch, planEnrichmen
 import { matchBibQuery, matchRefType } from '../src/lib/bib-search';
 import { TranscriptError, buildTranscriptNote, dedupeCues, formatTime, groupSegments, parseVtt, pickTrack, ytdlpError, type YtInfo } from '../src/lib/yt-transcript';
 import { joinItems } from '../src/lib/pdf-text';
-import { assessQuality, buildFullText, docHash, estimateTokens, fullTextMeta, queryTerms, sectionsBlock, selectSections, validDoc, verifyEvidence } from '../src/lib/fulltext';
+import { assessQuality, buildFullText, docHash, evidenceMarkdown, evidenceMatch, estimateTokens, fullTextMeta, queryTerms, sectionsBlock, selectSections, validDoc, verifyEvidence } from '../src/lib/fulltext';
 import { costUsd, estimate, normCost, usageCost } from '../src/lib/ai-cost';
 import { thesisContext } from '../src/lib/prompts';
 import { PAPER_MAX_TOKENS, cacheHit, collectionRequest, compactBlock, finishPaper, paperCacheKey, paperRequest, writingEvidence } from '../src/lib/paper-analysis';
@@ -1315,6 +1315,20 @@ async function fulltextTests() {
   const nm = normalizeMaterial(JSON.parse(JSON.stringify({ id: 'kq', title: '가상', analysis: fa, fulltext: fullTextMeta(kdoc, false) })), 'kq')!;
   eq([nm.analysis?.sources?.sectionIds.length, nm.fulltext?.extractorVersion, nm.fulltext?.quality?.level], [2, 2, 'low'], '저장 후에도 원문 절·추출 버전·품질 유지');
   eq(normalizeMaterial({ id: 'old', title: 'x', fulltext: { hash: 'h1', fileName: 'a.pdf', pages: 1, chars: 1, sections: 1, savedAt: '2026-11-20T00:00:00Z', cloud: false } }, 'old')?.fulltext?.extractorVersion, undefined, '이전에 등록한 원문은 추출 버전 없음 → 다시 추출 권장 대상');
+  const mm = verifyEvidence([
+    { section: 'Ⅱ', quote: '작업 시간을 약 70% 단축하면서도 형태 왜곡을 1/10로 줄였다', point: '' },
+    { section: 'Ⅱ', quote: '하이브리드 방식은 작업 시간을 약 70% 단축하면서도 형태 왜곡을 크게 줄였다', point: '' },
+    { section: 'Ⅱ', quote: '연구 참여자 전원이 만족도 조사에서 높은 점수를 주었다', point: '' },
+  ], kdoc.sections);
+  eq(mm.map((e) => [e.verified, e.match]), [[true, 'exact'], [false, 'similar'], [false, 'none']], '일치·의미 유사(문구 일부 다름)·원문 미확인을 구분');
+  eq(v.map((e) => e.match === 'exact'), v.map((e) => e.verified), '원문 확인(exact)은 정확히 일치한 경우에만');
+  eq([evidenceMatch({ verified: true }), evidenceMatch({ verified: false }), evidenceMatch({ verified: false, match: 'similar' }), evidenceMatch({ verified: true, match: 'none' })], ['exact', 'none', 'similar', 'exact'], '예전 결과(verified만 있음)도 일치 수준을 판정');
+  const md = evidenceMarkdown(mm);
+  ok(md.includes('[원문 확인] Ⅱ. 결론 p.2: "작업 시간을') && md.includes('[의미 유사 · 문구 불일치]') && md.includes('[원문 미확인]') && md.includes('(직접 인용 아님) 연구 참여자') && !md.includes('"연구 참여자') && !md.includes('"하이브리드') && md.includes('학술 인용에 사용할 수 없습니다'), '산출물에서 확인 안 된 문장은 따옴표 인용으로 쓰지 않고 학술 인용 불가 안내');
+  ok(!evidenceMarkdown(mm.slice(0, 1)).includes('학술 인용에 사용할 수 없습니다'), '모두 원문 확인이면 안내 문구 없음');
+  const keep = normalizeMaterial(JSON.parse(JSON.stringify({ id: 'kq', title: '가상', analysis: { ...fa, evidence: mm } })), 'kq')!.analysis!.evidence!;
+  eq(keep.map((e) => evidenceMatch(e)), ['exact', 'similar', 'none'], '저장 후에도 일치 수준 유지');
+  eq(normalizeMaterial(JSON.parse(JSON.stringify({ id: 'kq', title: '가상', analysis: { ...fa, evidence: [{ section: 'x', quote: 'q', verified: false, match: 'exact' }] } })), 'kq')!.analysis!.evidence!.map((e) => evidenceMatch(e)), ['none'], '저장된 값이 match=exact라도 verified가 아니면 원문 확인으로 보지 않음');
 }
 
 (async () => {

@@ -4,7 +4,7 @@ import { useStore, useProject } from '../store';
 import { AiError, generate } from '../lib/ai';
 import { authUser } from '../lib/auth';
 import { estimate, modelLabel, usageCost, usd, type Estimate } from '../lib/ai-cost';
-import { estimateTokens, type FullTextDoc } from '../lib/fulltext';
+import { estimateTokens, evidenceMarkdown, evidenceMatch, type FullTextDoc } from '../lib/fulltext';
 import { loadFullText } from '../lib/fulltext-store';
 import {
   COLLECTION_MAX_TOKENS,
@@ -228,21 +228,34 @@ function UsedSource({ a, m }: { a: AnalysisT; m: Material }) {
   );
 }
 
+const MATCH_LABEL = { exact: '원문 확인', similar: '의미 유사 · 문구 불일치', none: '원문 미확인' } as const;
+
 function EvidenceList({ a }: { a: AnalysisT }) {
   if (!a.evidence?.length) return null;
   return (
     <div className="result-item span-2">
       <h4>원문 근거</h4>
       <ul className="evidence-list">
-        {a.evidence.map((e, i) => (
-          <li key={i}>
-            {e.verified ? <span className="ok-tag">원문 확인</span> : <span className="warn-tag">원문에서 못 찾음</span>}{' '}
-            <span className="muted small">{e.section}{e.pages ? ` · p.${e.pages}` : ''}</span>
-            <blockquote>{e.quote}</blockquote>
-            {e.point && <span className="small">→ {e.point}</span>}
-          </li>
-        ))}
+        {a.evidence.map((e, i) => {
+          const mt = evidenceMatch(e);
+          return (
+            <li key={i}>
+              <span className={mt === 'exact' ? 'ok-tag' : 'warn-tag'}>{MATCH_LABEL[mt]}</span>{' '}
+              <span className="muted small">{e.section}{e.pages ? ` · p.${e.pages}` : ''}</span>
+              {mt === 'exact' ? (
+                <blockquote>{e.quote}</blockquote>
+              ) : (
+                <p className="paraphrase">
+                  <span className="muted small">{mt === 'similar' ? 'AI가 원문을 바꿔 쓴 문장 (원문 문구 아님)' : 'AI가 제시한 문장 (원문에서 확인 안 됨)'}: </span>
+                  {e.quote}
+                </p>
+              )}
+              {e.point && <span className="small">→ {e.point}</span>}
+            </li>
+          );
+        })}
       </ul>
+      {a.evidence.some((e) => !e.verified) && <p className="warn-note small">‘원문 확인’이 아닌 문장은 직접 인용이 아니므로 학술 인용에 사용할 수 없습니다. 인용하려면 원문에서 해당 문장을 직접 찾아 확인하세요.</p>}
     </div>
   );
 }
@@ -442,7 +455,7 @@ export function Analysis() {
       const a = finishPaper({ data, basis: doc ? 'fulltext' : 'abstract', doc, scope: req.scope, model: used || model, usage, prices: cost.prices, cacheKey: key, sectionIds: req.selection?.sections.map((s) => s.id) });
       dispatch({ type: 'update', id: m.id, patch: { analysis: a } });
       const evidence = a.evidence?.length
-        ? `\n\n## 원문 근거\n${a.evidence.map((e) => `- [${e.verified ? '원문 확인' : '원문에서 못 찾음'}] ${e.section}${e.pages ? ` p.${e.pages}` : ''}: "${e.quote}"${e.point ? ` → ${e.point}` : ''}`).join('\n')}`
+        ? `\n\n## 원문 근거\n${evidenceMarkdown(a.evidence)}`
         : '';
       const info = `\n\n## 분석 정보\n- 근거: ${a.basis === 'fulltext' ? '원문 기반' : '초록 기반'} — ${a.scope}\n- 모델: ${modelLabel(a.model)}${a.usage ? `\n- 사용 토큰: 입력 ${a.usage.inputTokens.toLocaleString()} · 출력 ${a.usage.outputTokens.toLocaleString()} · 추정 비용 ${usd(a.usage.costUsd)}` : ''}`;
       dispatch({

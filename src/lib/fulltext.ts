@@ -281,6 +281,27 @@ export interface Evidence {
   pages?: string;
   /** 원문에서 그대로 찾았는지 (로컬 확인) */
   verified: boolean;
+  /** exact: 원문과 일치 · similar: 문구는 다르나 원문 표현과 상당 부분 겹침 · none: 원문 미확인 */
+  match?: EvidenceMatch;
+}
+
+export type EvidenceMatch = 'exact' | 'similar' | 'none';
+
+/** 예전 결과(verified만 있음)도 포함해 일치 수준을 정한다 */
+export const evidenceMatch = (e: { verified: boolean; match?: EvidenceMatch }): EvidenceMatch =>
+  e.verified ? 'exact' : e.match === 'similar' ? 'similar' : 'none';
+
+/** 정규화한 인용의 6자 조각 중 원문에 있는 비율 (exact 아님을 이미 확인한 뒤에만 쓴다) */
+export function overlapRatio(q: string, all: string): number {
+  const n = 6;
+  if (q.length < 12) return 0;
+  let hit = 0;
+  let tot = 0;
+  for (let i = 0; i + n <= q.length; i += 3) {
+    tot++;
+    if (all.includes(q.slice(i, i + n))) hit++;
+  }
+  return tot ? hit / tot : 0;
 }
 
 /** AI가 낸 인용을 원문에서 찾아 확인하고, 찾은 절의 쪽 범위를 붙인다 */
@@ -302,6 +323,7 @@ export function verifyEvidence(items: { section: string; quote: string; point?: 
   return items.slice(0, 12).map((e) => {
     const q = squash(e.quote ?? '');
     const at = q.length >= 8 ? all.indexOf(q) : -1;
+    const match: EvidenceMatch = at >= 0 ? 'exact' : overlapRatio(q, all) >= 0.6 ? 'similar' : 'none';
     const first = at >= 0 ? sectionAt(at) : undefined;
     const last = at >= 0 ? sectionAt(at + q.length - 1) : undefined;
     const pages = first && last ? `${first.pageFrom}${Math.max(first.pageTo, last.pageTo) !== first.pageFrom ? `-${Math.max(first.pageTo, last.pageTo)}` : ''}` : undefined;
@@ -311,6 +333,21 @@ export function verifyEvidence(items: { section: string; quote: string; point?: 
       ...(e.point ? { point: e.point.trim().slice(0, 300) } : {}),
       ...(pages ? { pages } : {}),
       verified: at >= 0,
+      match,
     };
   });
+}
+
+const MD_LABEL: Record<EvidenceMatch, string> = { exact: '원문 확인', similar: '의미 유사 · 문구 불일치', none: '원문 미확인' };
+
+/** 산출물용 근거 목록: 원문과 일치한 문장만 따옴표로 인용하고, 나머지는 직접 인용이 아님을 밝힌다 */
+export function evidenceMarkdown(list: { section: string; quote: string; point?: string; pages?: string; verified: boolean; match?: EvidenceMatch }[]): string {
+  const lines = list.map((e) => {
+    const mt = evidenceMatch(e);
+    const where = `${e.section}${e.pages ? ` p.${e.pages}` : ''}`;
+    const body = mt === 'exact' ? `"${e.quote}"` : `(직접 인용 아님) ${e.quote}`;
+    return `- [${MD_LABEL[mt]}] ${where}: ${body}${e.point ? ` → ${e.point}` : ''}`;
+  });
+  if (list.some((e) => !e.verified)) lines.push('', '> ‘원문 확인’이 아닌 문장은 직접 인용이 아니므로 학술 인용에 사용할 수 없습니다.');
+  return lines.join('\n');
 }

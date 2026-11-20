@@ -70,7 +70,7 @@ function normAnalysis(x: unknown): Analysis | undefined {
     basis: x.basis === 'abstract' || x.basis === 'fulltext' ? x.basis : undefined,
     cacheKey: nonEmpty(x.cacheKey),
     scope: nonEmpty(x.scope),
-    evidence: Array.isArray(x.evidence) ? x.evidence.filter(isObj).filter((e) => typeof e.quote === 'string').slice(0, 12).map((e) => ({ section: str(e.section) ?? '', quote: String(e.quote), ...(nonEmpty(e.point) ? { point: nonEmpty(e.point) } : {}), ...(nonEmpty(e.pages) ? { pages: nonEmpty(e.pages) } : {}), verified: e.verified === true })) : undefined,
+    evidence: Array.isArray(x.evidence) ? x.evidence.filter(isObj).filter((e) => typeof e.quote === 'string').slice(0, 12).map((e) => ({ section: str(e.section) ?? '', quote: String(e.quote), ...(nonEmpty(e.point) ? { point: nonEmpty(e.point) } : {}), ...(nonEmpty(e.pages) ? { pages: nonEmpty(e.pages) } : {}), verified: e.verified === true, ...(e.verified !== true && e.match === 'similar' ? { match: 'similar' as const } : {}) })) : undefined,
     sources: isObj(x.sources) && typeof x.sources.hash === 'string' ? { hash: x.sources.hash, sectionIds: strArr(x.sources.sectionIds).slice(0, 200) } : undefined,
     usage: isObj(x.usage) && typeof x.usage.inputTokens === 'number' && typeof x.usage.outputTokens === 'number' && typeof x.usage.costUsd === 'number' ? { inputTokens: x.usage.inputTokens, outputTokens: x.usage.outputTokens, costUsd: x.usage.costUsd } : undefined,
   };

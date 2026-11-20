@@ -47,6 +47,7 @@ export interface AnalysisEvidence {
   point?: string;
   pages?: string;
   verified: boolean;
+  match?: 'exact' | 'similar' | 'none';
 }
 
 /** 원문은 별도 보관소(IndexedDB·Storage)에 있고, 자료에는 이 요약만 남긴다 */
