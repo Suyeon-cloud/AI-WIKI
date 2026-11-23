@@ -1,4 +1,4 @@
-import type { Analysis, AnalysisEdits } from '../types';
+import type { Analysis, AnalysisEdits, Material } from '../types';
 
 /** 사용자가 직접 고칠 수 있는 AI 분석 항목. list는 한 줄에 하나씩 입력한다. */
 export const EDITABLE_FIELDS = [
@@ -22,6 +22,14 @@ const same = (x: unknown, y: unknown) => JSON.stringify(x ?? '') === JSON.string
 
 /** AI 원본 값 (수정본과 상관없이 보존된 값) */
 export const originalOf = (a: Analysis, k: EditKey): string | string[] => (a[k] ?? (isListKey(k) ? [] : '')) as string | string[];
+
+export const isEmptyValue = (v: string | string[]) => (Array.isArray(v) ? !v.length : !v.trim());
+
+/** 재분석이 끝난 시점의 최신 분석에 수정본이 있으면 돌려준다 (분석 기록에 따로 보관하기 위해) */
+export const latestEdited = (ms: Material[], id: string): Analysis | undefined => {
+  const a = ms.find((x) => x.id === id)?.analysis;
+  return a && editedKeys(a).length ? a : undefined;
+};
 
 /** 수정본이 있는 항목 */
 export const editedKeys = (a: Analysis): EditKey[] => EDITABLE_FIELDS.map((f) => f.key).filter((k) => a.edits?.[k] !== undefined);

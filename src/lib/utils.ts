@@ -1,5 +1,6 @@
 import { SCHEMA_VERSION, type Material, type Para, type SourceType } from '../types';
 import { stringifyYaml } from './yaml';
+import { withEdits } from './analysis-edits';
 
 export const SOURCE_TYPES: SourceType[] = ['PDF', 'Web', 'YouTube', 'HWPX', 'Markdown', 'TXT', 'JSON'];
 export const PARAS: Para[] = ['Projects', 'Areas', 'Resources', 'Archives'];
@@ -168,7 +169,8 @@ export function materialToMarkdown(m: Material) {
   if (m.fileName) body.push(`- 파일: ${m.fileName} (${formatSize(m.fileSize)}, 브라우저 로컬 정보)`);
   if (m.content) body.push('', MD_HEADINGS.content, '', m.content);
   if (m.analysis) {
-    const a = m.analysis;
+    // 사용자 수정본이 있으면 수정본을 내보낸다 (AI 원본은 앱에 그대로 보존)
+    const a = withEdits(m.analysis);
     body.push(
       '',
       MD_HEADINGS.analysis,
@@ -181,6 +183,14 @@ export function materialToMarkdown(m: Material) {
       '',
       '**핵심 인사이트**',
       ...a.insights.map((i) => `- ${i}`),
+      // 수정본이 있는 자료만 항목을 더 적는다 (수정 없는 자료의 내보내기 결과는 이전과 같음)
+      ...(m.analysis.edits ? [
+        a.method && `- 연구 방법: ${a.method}`,
+        a.findings && `- 주요 결과: ${a.findings}`,
+        a.limitations && `- 한계: ${a.limitations}`,
+        a.keywords.length ? `- 핵심 키워드: ${a.keywords.join(', ')}` : '',
+        '- (연구자가 직접 수정한 항목 포함)',
+      ] : []).filter((x): x is string => !!x),
     );
   }
   if (m.transcript) {

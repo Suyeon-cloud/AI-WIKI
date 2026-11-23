@@ -10,7 +10,7 @@
  */
 import { buildBackup, normBib, normalizeMaterial, parseFullState, planImport, resolveImport } from '../src/lib/data';
 import { parseImportFile, readClipNote, readTranscriptNote } from '../src/lib/importers';
-import { materialToMarkdown, markdownToHtml } from '../src/lib/utils';
+import { materialToMarkdown, materialToText, markdownToHtml } from '../src/lib/utils';
 import { checkBib, formatCitation, sameAuthorYear, segsToHtml, segsToText, sortForStyle, type CitationStyle } from '../src/lib/citation';
 import { CORRUPT_PREFIX, LEGACY_KEY_V1, STORAGE_KEY, loadState, saveState, type StorageLike } from '../src/lib/persist';
 import { DEFAULT_WRITING, SAMPLE_MATERIALS } from '../src/data/sample';
@@ -25,7 +25,7 @@ import { clipAbstract, clipYear, defaultEnrichFields, enrichPatch, planEnrichmen
 import { matchBibQuery, matchRefType } from '../src/lib/bib-search';
 import { TranscriptError, buildTranscriptNote, dedupeCues, formatTime, groupSegments, parseVtt, pickTrack, ytdlpError, type YtInfo } from '../src/lib/yt-transcript';
 import { joinItems } from '../src/lib/pdf-text';
-import { editedKeys, normEdits, revertEdit, setEdit, withEdits } from '../src/lib/analysis-edits';
+import { editedKeys, isEmptyValue, latestEdited, normEdits, originalOf, revertEdit, setEdit, withEdits } from '../src/lib/analysis-edits';
 import { assessQuality, buildFullText, docHash, evidenceMarkdown, evidenceMatch, fixChapterLine, manualSelection, roleOf, sectionsInPages, structureWarnings, estimateTokens, fullTextMeta, queryTerms, sectionsBlock, selectSections, validDoc, verifyEvidence } from '../src/lib/fulltext';
 import { costUsd, estimate, normCost, usageCost } from '../src/lib/ai-cost';
 import { thesisContext } from '../src/lib/prompts';
@@ -1424,6 +1424,25 @@ async function fulltextTests() {
   const block = compactBlock({ ...stored, analysis: stored.analysis }, 0);
   ok(block.includes('2026') && !block.includes('조아라(2025)'), '전체 분석에는 수정본을 사용');
   ok(cacheHit({ ...stored }, 'k1'), '수정해도 분석 캐시 키는 그대로 (AI 재호출 불필요)');
+  section('17-9. 수정본 회귀: 내보내기 · 빈 항목 수정 · 재분석 중 수정 보관');
+  const jo = { ...stored, analysis: setEdit(stored.analysis!, 'method', '설문 조사') };
+  const joMd = materialToMarkdown(jo);
+  ok(joMd.includes('조아라(2026)') && !joMd.includes('조아라(2025)') && joMd.includes('연구 방법: 설문 조사') && joMd.includes('큐레이션'), 'MD 내보내기(Obsidian·Drive 공통)에 수정본 반영');
+  ok(materialToText(jo).includes('조아라(2026)'), 'TXT 내보내기에 수정본 반영');
+  ok(jo.analysis.summary === aiA.summary && jo.analysis.method === '사례 분석', '내보내기 후에도 AI 원본 보존');
+  const plain = normalizeMaterial({ id: 'p', title: 't', sourceType: 'PDF', createdAt: '2026-01-01T00:00:00.000Z', analysis: aiA })!;
+  const pmd = materialToMarkdown(plain);
+  ok(pmd.includes(aiA.summary) && !pmd.includes('연구 방법:') && !pmd.includes('직접 수정'), '수정 없는 자료의 내보내기 결과는 이전과 같음');
+  const noLim = { ...aiA, limitations: undefined, citationCandidate: '' };
+  ok(isEmptyValue(originalOf(noLim, 'limitations')) && isEmptyValue(originalOf(noLim, 'citationCandidate')), 'AI 결과가 빈 항목 감지');
+  const filled = setEdit(setEdit(noLim, 'limitations', '표본이 작다'), 'citationCandidate', '조아라(2026)');
+  ok(withEdits(filled).limitations === '표본이 작다' && filled.limitations === undefined && withEdits(filled).citationCandidate === '조아라(2026)', '빈 항목에 직접 입력 (원본은 빈 채로 보존)');
+  const filledBack = normalizeMaterial(JSON.parse(JSON.stringify({ id: 'f', title: 't', sourceType: 'PDF', createdAt: '2026-01-01T00:00:00.000Z', analysis: filled })))!;
+  ok(withEdits(filledBack.analysis)!.limitations === '표본이 작다' && revertEdit(revertEdit(filledBack.analysis!, 'limitations'), 'citationCandidate').edits === undefined, '빈 항목 입력도 새로고침 후 유지, 되돌리면 빈 원본으로');
+  const atStart = [{ ...stored, analysis: aiA }];
+  const duringRun = [{ ...stored, analysis: setEdit(aiA, 'summary', '분석 중에 고친 요약') }];
+  ok(latestEdited(atStart, 'jo') === undefined && withEdits(latestEdited(duringRun, 'jo')!).summary === '분석 중에 고친 요약', '재분석 시작 후 저장한 수정본도 보관 대상 (분석이 끝난 시점 기준)');
+  ok(latestEdited(duringRun, '다른-id') === undefined, '다른 논문의 수정본은 보관 대상 아님');
 
 }
 
