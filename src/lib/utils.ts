@@ -1,6 +1,6 @@
 import { SCHEMA_VERSION, type Material, type Para, type SourceType } from '../types';
 import { stringifyYaml } from './yaml';
-import { withEdits } from './analysis-edits';
+import { EDITABLE_FIELDS, editedKeys, withEdits } from './analysis-edits';
 
 export const SOURCE_TYPES: SourceType[] = ['PDF', 'Web', 'YouTube', 'HWPX', 'Markdown', 'TXT', 'JSON'];
 export const PARAS: Para[] = ['Projects', 'Areas', 'Resources', 'Archives'];
@@ -183,15 +183,23 @@ export function materialToMarkdown(m: Material) {
       '',
       '**핵심 인사이트**',
       ...a.insights.map((i) => `- ${i}`),
-      // 수정본이 있는 자료만 항목을 더 적는다 (수정 없는 자료의 내보내기 결과는 이전과 같음)
-      ...(m.analysis.edits ? [
+    );
+    // 수정본이 있는 자료만 나머지 분석 항목을 모두 적는다 (고친 항목은 수정본, 고치지 않은 항목은 AI 원본).
+    // 수정 없는 자료의 내보내기 결과는 이전과 같다.
+    const edited = editedKeys(m.analysis);
+    if (edited.length) {
+      const rest = [
+        a.topic && `- 핵심 주제: ${a.topic}`,
         a.method && `- 연구 방법: ${a.method}`,
         a.findings && `- 주요 결과: ${a.findings}`,
         a.limitations && `- 한계: ${a.limitations}`,
+        a.usageIdea && `- 활용 제안: ${a.usageIdea}`,
+        a.citationCandidate && `- 인용 후보: ${a.citationCandidate}`,
         a.keywords.length ? `- 핵심 키워드: ${a.keywords.join(', ')}` : '',
-        '- (연구자가 직접 수정한 항목 포함)',
-      ] : []).filter((x): x is string => !!x),
-    );
+      ].filter((x): x is string => !!x);
+      const labels = EDITABLE_FIELDS.filter((f) => edited.includes(f.key)).map((f) => f.label);
+      body.push('', '**세부 분석**', ...rest, '', `_연구자가 직접 수정한 항목: ${labels.join(', ')} (나머지는 AI 분석 원본)_`);
+    }
   }
   if (m.transcript) {
     body.push('', MD_HEADINGS.transcript, '', ...m.transcript.points.map((p) => `- ${p}`), '');

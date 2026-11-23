@@ -33,7 +33,7 @@ import { PAPER_MAX_TOKENS, autoSectionIds, cacheHit, collectionRequest, compactB
 import { planTranscriptEnrich, summarizeTranscript, transcriptPatch, type YtField } from '../src/lib/yt-enrich';
 import { buildThesisHwpx, thesisXml, zipStore, type ThesisDoc } from '../src/lib/hwpx';
 import sampleThesis from '../.claude/skills/hufs-thesis-writing/examples/sample-thesis.json';
-import type { AppState, Bib, Material, Project } from '../src/types';
+import type { Analysis, AppState, Bib, Material, Project } from '../src/types';
 import obsidianNote from './fixtures/obsidian-real-note.md';
 import v1Storage from './fixtures/v1-storage.json';
 
@@ -1433,6 +1433,23 @@ async function fulltextTests() {
   const plain = normalizeMaterial({ id: 'p', title: 't', sourceType: 'PDF', createdAt: '2026-01-01T00:00:00.000Z', analysis: aiA })!;
   const pmd = materialToMarkdown(plain);
   ok(pmd.includes(aiA.summary) && !pmd.includes('연구 방법:') && !pmd.includes('직접 수정'), '수정 없는 자료의 내보내기 결과는 이전과 같음');
+
+  section('17-10. 자료 Markdown·TXT 내보내기: 수정 가능한 분석 항목 전부 반영');
+  const allEdit = [
+    ['summary', '수정 요약'], ['topic', '수정 핵심 주제'], ['rationale', '수정 관련도 근거'], ['method', '수정 연구 방법'], ['connection', '수정 접점'],
+    ['insights', ['수정 통찰1', '수정 통찰2']], ['limitations', '수정 한계'], ['usageIdea', '수정 활용 제안'], ['citationCandidate', '수정 인용 후보'], ['keywords', ['수정키1', '수정키2']],
+  ] as const;
+  let fullA: Analysis = { ...aiA, usageIdea: '원본 활용 제안' };
+  for (const [k, v] of allEdit) fullA = setEdit(fullA, k, v as string | string[]);
+  const fullMat = normalizeMaterial(JSON.parse(JSON.stringify({ id: 'all', title: '전체 수정', sourceType: 'PDF', createdAt: '2026-01-01T00:00:00.000Z', analysis: fullA })))!;
+  const fullMd = materialToMarkdown(fullMat);
+  const fullTxt = materialToText(fullMat);
+  const want = allEdit.flatMap(([, v]) => (Array.isArray(v) ? v : [v]));
+  ok(want.every((t) => fullMd.includes(t)) && want.every((t) => fullTxt.includes(t)), 'Markdown·TXT에 수정한 항목 10개(핵심 주제·활용 제안·인용 후보 포함) 모두 반영');
+  ok(fullMd.includes('주요 결과: 결과') && !fullMd.includes('원본 활용 제안') && !fullMd.includes(aiA.summary), '고치지 않은 항목(주요 결과)은 AI 원본, 고친 항목은 원본 대신 수정본');
+  ok(fullMd.includes('연구자가 직접 수정한 항목: 요약, 핵심 주제') && fullMd.includes('(나머지는 AI 분석 원본)'), '수정한 항목 이름 표시');
+  ok(fullMat.analysis!.summary === aiA.summary && fullMat.analysis!.usageIdea === '원본 활용 제안', '내보내도 AI 원본은 앱에 그대로');
+  ok(!pmd.includes('세부 분석') && !materialToText(plain).includes('세부 분석'), '수정 없는 자료의 Markdown·TXT는 이전 형식 그대로');
   const noLim = { ...aiA, limitations: undefined, citationCandidate: '' };
   ok(isEmptyValue(originalOf(noLim, 'limitations')) && isEmptyValue(originalOf(noLim, 'citationCandidate')), 'AI 결과가 빈 항목 감지');
   const filled = setEdit(setEdit(noLim, 'limitations', '표본이 작다'), 'citationCandidate', '조아라(2026)');
